@@ -1,0 +1,299 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2200" height="1800" viewBox="0 0 2200 1800">
+<g font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif">
+<rect x="0" y="0" width="2200" height="1800" fill="#FFFFFF"/>
+<text x="40" y="65" font-size="42" font-weight="700" fill="#18324C" text-anchor="start">Kaki 当前总体架构</text>
+<text x="40" y="114" font-size="26" font-weight="400" fill="#586D80" text-anchor="start">src/kaki · 同进程调度 · 完整模型响应与执行事实落库后推进</text>
+<g id="edge-legend-C">
+<polyline points="1610,47 1674,47" fill="none" stroke="#2967BB" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<polygon points="1674,47 1661,41 1661,53" fill="#2967BB"/>
+</g>
+<text x="1690" y="56" font-size="25" font-weight="650" fill="#2967BB" text-anchor="start">C 调用 / 控制</text>
+<g id="edge-legend-D">
+<polyline points="1610,96 1674,96" fill="none" stroke="#23845E" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="11 8"/>
+<polygon points="1674,96 1661,90 1661,102" fill="#23845E"/>
+</g>
+<text x="1690" y="105" font-size="25" font-weight="650" fill="#23845E" text-anchor="start">D 数据 / 事件 / 结果</text>
+<rect x="35" y="175" width="1535" height="1275" rx="28" fill="#F5F8FD" stroke="#BBCDE5" stroke-width="2.5"/>
+<rect x="60" y="201" width="11" height="35" rx="5" fill="#2967BB" stroke="none" stroke-width="2"/>
+<text x="88" y="229" font-size="31" font-weight="700" fill="#18324C" text-anchor="start">Kaki Python 进程</text>
+<text x="65" y="273" font-size="25" font-weight="400" fill="#586D80" text-anchor="start">Textual 与 Runtime 直接调用；Store 单连接 worker 线程也属于此进程</text>
+<text x="1690" y="229" font-size="29" font-weight="650" fill="#795BA7" text-anchor="start">进程外 / 网络边界</text>
+<line x1="1660" y1="251" x2="2150" y2="251" stroke="#D5CAE4" stroke-width="2"/>
+<g id="tui-py">
+<rect x="75" y="340" width="300" height="260" rx="20" fill="#173952" stroke="#173952" stroke-width="2"/>
+<path d="M95 340 H355 Q375 340 375 360 V383 H75 V360 Q75 340 95 340 Z" fill="#102B42" stroke="none" stroke-width="0" stroke-linejoin="round"/>
+<circle cx="100" cy="362" r="6" fill="#E7A489"/>
+<circle cx="125" cy="362" r="6" fill="#E4C37F"/>
+<circle cx="150" cy="362" r="6" fill="#83BEA6"/>
+<text x="100" y="430" font-size="31" font-weight="650" fill="#FFFFFF" text-anchor="start">Textual TUI</text>
+<text x="100" y="467" font-size="24" font-weight="400" fill="#DCE8F1" text-anchor="start">tui.py</text>
+<text x="100" y="505" font-size="24" font-weight="400" fill="#FFFFFF" text-anchor="start">队列消费 / 增量刷新</text>
+<text x="100" y="543" font-size="24" font-weight="400" fill="#FFFFFF" text-anchor="start">提问答复 / 取消</text>
+<text x="100" y="580" font-size="24" font-weight="400" fill="#DCE8F1" text-anchor="start">单 Python 进程</text>
+</g>
+<g id="runtime-py">
+<rect x="590" y="320" width="430" height="370" rx="23" fill="#FFFFFF" stroke="#9FB9DB" stroke-width="2.5"/>
+<text x="615" y="362" font-size="27" font-weight="700" fill="#18324C" text-anchor="start">Runtime · runtime.py</text>
+<text x="615" y="397" font-size="24" font-weight="400" fill="#586D80" text-anchor="start">单活跃Turn / fcntl lease</text>
+<text x="615" y="430" font-size="24" font-weight="400" fill="#18324C" text-anchor="start">accept_turn → before快照</text>
+<text x="615" y="463" font-size="24" font-weight="400" fill="#18324C" text-anchor="start">after快照 / context.after_turn</text>
+<text x="615" y="496" font-size="24" font-weight="650" fill="#2967BB" text-anchor="start">唯一 turn.finished</text>
+<rect x="615" y="535" width="380" height="125" rx="18" fill="#214F8A" stroke="none" stroke-width="2"/>
+<text x="805" y="577" font-size="30" font-weight="700" fill="#FFFFFF" text-anchor="middle">AgentLoop · loop.py</text>
+<text x="805" y="620" font-size="24" font-weight="400" fill="#E3EEF8" text-anchor="middle">窗口 → 模型 → 工具 → 结果</text>
+<g id="edge-C2">
+<polyline points="640,505 640,535" fill="none" stroke="#2967BB" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<polygon points="640,535 634,522 646,522" fill="#2967BB"/>
+</g>
+<text x="666" y="528" font-size="23" font-weight="650" fill="#2967BB" text-anchor="start">C2 调度迭代</text>
+</g>
+<g id="provider-py">
+<rect x="1190" y="320" width="360" height="330" rx="22" fill="#EEF3FF" stroke="#A8BDE6" stroke-width="2"/>
+<text x="1215" y="363" font-size="26" font-weight="700" fill="#18324C" text-anchor="start">RightCodeProvider</text>
+<text x="1215" y="401" font-size="24" font-weight="400" fill="#586D80" text-anchor="start">provider.py</text>
+<text x="1215" y="438" font-size="24" font-weight="550" fill="#18324C" text-anchor="start">AsyncOpenAI / SSE</text>
+<text x="1215" y="475" font-size="24" font-weight="550" fill="#18324C" text-anchor="start">完整 native_items / usage</text>
+<text x="1215" y="512" font-size="24" font-weight="400" fill="#18324C" text-anchor="start">回传 ModelResponse</text>
+<text x="1215" y="549" font-size="24" font-weight="400" fill="#586D80" text-anchor="start">完整结束后才允许工具</text>
+<text x="1215" y="586" font-size="24" font-weight="400" fill="#586D80" text-anchor="start">增量仅作 UI 草稿</text>
+<text x="1215" y="623" font-size="24" font-weight="400" fill="#586D80" text-anchor="start">无隐式模型 / 端点切换</text>
+</g>
+<g id="rightcode-external">
+<path d="M1725 620 C1703 620 1690 607 1690 585 V420 C1690 395 1706 380 1733 377 C1737 346 1768 327 1803 340 C1822 307 1867 309 1890 333 C1928 309 1969 336 1976 368 C2019 356 2061 382 2065 416 C2117 410 2150 440 2150 481 V585 C2150 608 2136 620 2112 620 Z" fill="#F3EEFA" stroke="#B59FCE" stroke-width="2.5" stroke-linejoin="round"/>
+<text x="1920" y="403" font-size="36" font-weight="700" fill="#18324C" text-anchor="middle">RightCode</text>
+<text x="1920" y="453" font-size="29" font-weight="550" fill="#18324C" text-anchor="middle">Responses API</text>
+<text x="1920" y="503" font-size="26" font-weight="550" fill="#795BA7" text-anchor="middle">HTTPS / SSE</text>
+<text x="1920" y="551" font-size="25" font-weight="400" fill="#586D80" text-anchor="middle">文本增量 + 完整响应项</text>
+</g>
+<g id="durable-tool-gate">
+<rect x="1110" y="725" width="440" height="120" rx="18" fill="#FFF5E4" stroke="#D9BC80" stroke-width="2"/>
+<text x="1135" y="760" font-size="24" font-weight="650" fill="#18324C" text-anchor="start">C6 模型提交 + planned</text>
+<text x="1135" y="795" font-size="24" font-weight="550" fill="#18324C" text-anchor="start">on_start：mark_running</text>
+<text x="1135" y="830" font-size="24" font-weight="400" fill="#586D80" text-anchor="start">确认后才执行工具</text>
+</g>
+<g id="context-engine-py">
+<rect x="590" y="900" width="430" height="320" rx="22" fill="#EAF5EF" stroke="#A6CBB5" stroke-width="2"/>
+<rect x="590" y="922" width="7" height="276" rx="3" fill="#409772" stroke="none" stroke-width="2"/>
+<text x="615" y="944" font-size="31" font-weight="700" fill="#18324C" text-anchor="start">ContextEngine</text>
+<text x="615" y="983" font-size="24" font-weight="400" fill="#586D80" text-anchor="start">context/engine.py</text>
+<text x="615" y="1022" font-size="24" font-weight="400" fill="#18324C" text-anchor="start">prefix：身份 / rules / memory</text>
+<text x="615" y="1060" font-size="24" font-weight="400" fill="#18324C" text-anchor="start">＋ 本地 skills / recovery</text>
+<text x="615" y="1098" font-size="24" font-weight="500" fill="#18324C" text-anchor="start">快路 / Curator / 确定性回退</text>
+<text x="615" y="1136" font-size="24" font-weight="550" fill="#18324C" text-anchor="start">TokenBudget + 工具配对门</text>
+<text x="615" y="1174" font-size="24" font-weight="400" fill="#586D80" text-anchor="start">归档 / 记忆 / after_turn</text>
+</g>
+<g id="tools-py">
+<rect x="1190" y="900" width="360" height="320" rx="22" fill="#EEF3FF" stroke="#A8BDE6" stroke-width="2"/>
+<text x="1215" y="944" font-size="30" font-weight="700" fill="#18324C" text-anchor="start">ToolRegistry</text>
+<text x="1215" y="983" font-size="24" font-weight="400" fill="#586D80" text-anchor="start">tools.py</text>
+<text x="1215" y="1022" font-size="24" font-weight="400" fill="#18324C" text-anchor="start">文件 / 搜索 / Shell</text>
+<text x="1215" y="1060" font-size="24" font-weight="400" fill="#18324C" text-anchor="start">ask_user / 浏览器别名</text>
+<text x="1215" y="1098" font-size="24" font-weight="550" fill="#18324C" text-anchor="start">安全 READ：最多4并发</text>
+<text x="1215" y="1136" font-size="24" font-weight="550" fill="#18324C" text-anchor="start">其他调用：严格串行</text>
+<text x="1215" y="1174" font-size="24" font-weight="400" fill="#586D80" text-anchor="start">每工具完成立即提交</text>
+</g>
+<g id="store-py">
+<rect x="75" y="900" width="300" height="320" rx="22" fill="#FFF6E7" stroke="#D9BF86" stroke-width="2"/>
+<text x="100" y="944" font-size="24" font-weight="700" fill="#18324C" text-anchor="start">Store · store.py</text>
+<text x="100" y="984" font-size="24" font-weight="550" fill="#18324C" text-anchor="start">单连接拥有者线程</text>
+<text x="100" y="1022" font-size="24" font-weight="400" fill="#18324C" text-anchor="start">WAL · FULL 同步</text>
+<text x="100" y="1060" font-size="24" font-weight="400" fill="#586D80" text-anchor="start">短事务保存事实</text>
+<text x="100" y="1098" font-size="24" font-weight="400" fill="#18324C" text-anchor="start">sessions / turns</text>
+<text x="100" y="1136" font-size="24" font-weight="400" fill="#18324C" text-anchor="start">消息 / 工具状态 / 事件</text>
+<text x="100" y="1174" font-size="24" font-weight="400" fill="#586D80" text-anchor="start">archive / memories</text>
+</g>
+<g id="checkpoint-py">
+<rect x="600" y="1280" width="420" height="130" rx="20" fill="#FFF6E7" stroke="#D9BF86" stroke-width="2"/>
+<text x="625" y="1321" font-size="29" font-weight="700" fill="#18324C" text-anchor="start">Checkpoint</text>
+<text x="946" y="1321" font-size="24" font-weight="650" fill="#2967BB" text-anchor="start">C8</text>
+<text x="625" y="1357" font-size="24" font-weight="400" fill="#18324C" text-anchor="start">checkpoint.py · before / after</text>
+<text x="625" y="1393" font-size="24" font-weight="400" fill="#586D80" text-anchor="start">D5 快照ID / 状态（按策略启用）</text>
+</g>
+<g id="browser-mcp-owner">
+<rect x="1190" y="1280" width="360" height="130" rx="20" fill="#F0ECF8" stroke="#BAA6D1" stroke-width="2"/>
+<text x="1215" y="1319" font-size="28" font-weight="650" fill="#18324C" text-anchor="start">BrowserMcp</text>
+<text x="1215" y="1356" font-size="24" font-weight="550" fill="#795BA7" text-anchor="start">browser_mcp.py</text>
+<text x="1215" y="1393" font-size="24" font-weight="400" fill="#586D80" text-anchor="start">owner task / 请求队列</text>
+</g>
+<g id="playwright-subprocess">
+<rect x="1690" y="1280" width="460" height="160" rx="20" fill="#F5F0FB" stroke="#B29CCC" stroke-width="2.5" stroke-dasharray="9 6"/>
+<text x="1715" y="1324" font-size="29" font-weight="650" fill="#18324C" text-anchor="start">Playwright MCP 子进程</text>
+<text x="1715" y="1363" font-size="25" font-weight="500" fill="#795BA7" text-anchor="start">JSON-RPC / stdio</text>
+<text x="1715" y="1402" font-size="24" font-weight="400" fill="#586D80" text-anchor="start">独立 profile / browser-output</text>
+</g>
+<g id="browser-process">
+<rect x="1690" y="1550" width="460" height="165" rx="18" fill="#F5F0FB" stroke="#B29CCC" stroke-width="2.5" stroke-dasharray="9 6"/>
+<line x1="1690" y1="1580" x2="2150" y2="1580" stroke="#D4C6E4" stroke-width="2"/>
+<circle cx="1713" cy="1566" r="4" fill="#AA94C6"/>
+<circle cx="1732" cy="1566" r="4" fill="#AA94C6"/>
+<circle cx="1751" cy="1566" r="4" fill="#AA94C6"/>
+<text x="1715" y="1622" font-size="29" font-weight="650" fill="#18324C" text-anchor="start">独立浏览器 / Profile</text>
+<text x="1715" y="1661" font-size="24" font-weight="400" fill="#586D80" text-anchor="start">项目私有 browser-profile</text>
+<text x="1715" y="1699" font-size="24" font-weight="400" fill="#586D80" text-anchor="start">页面状态 / DOM / 截图</text>
+</g>
+<rect x="35" y="1545" width="1000" height="205" rx="23" fill="#FCFAF6" stroke="#D8CEBC" stroke-width="2"/>
+<g id="sqlite-on-disk">
+<path d="M65 1595 C65 1571 365 1571 365 1595 L365 1680 C365 1704 65 1704 65 1680 Z" fill="#FFFFFF" stroke="#C7A566" stroke-width="2.5" stroke-linejoin="round"/>
+<ellipse cx="215" cy="1595" rx="150" ry="20" fill="#F5E8CA" stroke="#C7A566" stroke-width="2.5"/>
+<text x="215" y="1657" font-size="31" font-weight="700" fill="#18324C" text-anchor="middle">SQLite</text>
+<text x="215" y="1691" font-size="24" font-weight="500" fill="#18324C" text-anchor="middle">kaki.sqlite3</text>
+</g>
+<g id="shadow-git-on-disk">
+<path d="M600 1598 V1575 H752 L774 1598 H990 V1708 H600 Z" fill="#FFF8EA" stroke="#C7A566" stroke-width="2.5" stroke-linejoin="round"/>
+<text x="625" y="1643" font-size="30" font-weight="650" fill="#18324C" text-anchor="start">独立 shadow Git</text>
+<text x="625" y="1681" font-size="24" font-weight="400" fill="#586D80" text-anchor="start">文件树 / SHA / 恢复依据</text>
+</g>
+<text x="65" y="1735" font-size="24" font-weight="550" fill="#586D80" text-anchor="start">项目状态：~/.kaki/projects/项目名-hash/</text>
+<g id="workspace-on-disk">
+<path d="M1190 1570 V1545 H1333 L1355 1570 H1550 V1750 H1190 Z" fill="#FFF8EA" stroke="#C7A566" stroke-width="2.5" stroke-linejoin="round"/>
+<text x="1215" y="1607" font-size="29" font-weight="650" fill="#18324C" text-anchor="start">目标工作区</text>
+<text x="1215" y="1648" font-size="30" font-weight="650" fill="#18324C" text-anchor="start">media_platform</text>
+<text x="1215" y="1687" font-size="24" font-weight="400" fill="#18324C" text-anchor="start">单 Git 工作树</text>
+<text x="1215" y="1725" font-size="24" font-weight="400" fill="#586D80" text-anchor="start">workspace.py 边界</text>
+</g>
+<text x="40" y="1790" font-size="24" font-weight="500" fill="#586D80" text-anchor="start">恢复：事实对账与文件快照分开；unknown 副作用先核对现场，不自动重放；外部事务不随快照撤回。</text>
+<g id="edge-C1">
+<polyline points="375,420 590,420" fill="none" stroke="#2967BB" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<polygon points="590,420 577,414 577,426" fill="#2967BB"/>
+</g>
+<text x="400" y="375" font-size="24" font-weight="650" fill="#2967BB" text-anchor="start">C1 提交 / 答复</text>
+<text x="400" y="408" font-size="24" font-weight="400" fill="#2967BB" text-anchor="start">或取消当前Turn</text>
+<g id="edge-D13">
+<polyline points="590,565 375,565" fill="none" stroke="#23845E" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="11 8"/>
+<polygon points="375,565 388,559 388,571" fill="#23845E"/>
+</g>
+<text x="400" y="520" font-size="24" font-weight="650" fill="#23845E" text-anchor="start">D13 UI 事件</text>
+<text x="400" y="550" font-size="24" font-weight="400" fill="#23845E" text-anchor="start">增量/提问/结束</text>
+<g id="edge-C3">
+<polyline points="700,660 700,900" fill="none" stroke="#2967BB" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<polygon points="700,900 694,887 706,887" fill="#2967BB"/>
+</g>
+<text x="725" y="758" font-size="24" font-weight="650" fill="#2967BB" text-anchor="start">C3 组窗</text>
+<text x="725" y="794" font-size="24" font-weight="400" fill="#2967BB" text-anchor="start">rebalance</text>
+<g id="edge-D1">
+<polyline points="900,900 900,660" fill="none" stroke="#23845E" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="11 8"/>
+<polygon points="900,660 894,673 906,673" fill="#23845E"/>
+</g>
+<text x="725" y="861" font-size="24" font-weight="650" fill="#23845E" text-anchor="start">D1 模型窗口</text>
+<g id="edge-C4">
+<polyline points="995,565 1190,565" fill="none" stroke="#2967BB" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<polygon points="1190,565 1177,559 1177,571" fill="#2967BB"/>
+</g>
+<text x="1040" y="498" font-size="24" font-weight="650" fill="#2967BB" text-anchor="start">C4 请求</text>
+<text x="1040" y="532" font-size="24" font-weight="400" fill="#2967BB" text-anchor="start">窗口 + 工具</text>
+<g id="edge-D3">
+<polyline points="1190,625 995,625" fill="none" stroke="#23845E" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="11 8"/>
+<polygon points="995,625 1008,619 1008,631" fill="#23845E"/>
+</g>
+<text x="1040" y="600" font-size="24" font-weight="650" fill="#23845E" text-anchor="start">D3 完整响应</text>
+<g id="edge-C5">
+<polyline points="1550,470 1690,470" fill="none" stroke="#2967BB" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<polygon points="1690,470 1677,464 1677,476" fill="#2967BB"/>
+</g>
+<text x="1580" y="408" font-size="24" font-weight="650" fill="#2967BB" text-anchor="start">C5 请求</text>
+<text x="1580" y="441" font-size="24" font-weight="400" fill="#2967BB" text-anchor="start">HTTPS</text>
+<g id="edge-D2">
+<polyline points="1690,570 1550,570" fill="none" stroke="#23845E" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="11 8"/>
+<polygon points="1550,570 1563,564 1563,576" fill="#23845E"/>
+</g>
+<text x="1580" y="625" font-size="24" font-weight="650" fill="#23845E" text-anchor="start">D2 SSE</text>
+<g id="edge-C6">
+<polyline points="995,640 1100,640 1100,790 1110,790" fill="none" stroke="#2967BB" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<polygon points="1110,790 1097,784 1097,796" fill="#2967BB"/>
+</g>
+<g id="edge-C7">
+<polyline points="1330,845 1330,900" fill="none" stroke="#2967BB" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<polygon points="1330,900 1324,887 1336,887" fill="#2967BB"/>
+</g>
+<text x="1350" y="885" font-size="24" font-weight="650" fill="#2967BB" text-anchor="start">C7 执行</text>
+<g id="edge-D4">
+<polyline points="1190,1130 1050,1130 1050,710 950,710 950,660" fill="none" stroke="#23845E" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="11 8"/>
+<polygon points="950,660 944,673 956,673" fill="#23845E"/>
+</g>
+<text x="1065" y="1065" font-size="24" font-weight="650" fill="#23845E" text-anchor="start">D4 已落库</text>
+<text x="1065" y="1100" font-size="24" font-weight="400" fill="#23845E" text-anchor="start">回填窗口</text>
+<g id="edge-C9">
+<polyline points="615,600 480,600 480,860 225,860 225,900" fill="none" stroke="#2967BB" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<polygon points="225,900 219,887 231,887" fill="#2967BB"/>
+</g>
+<text x="80" y="715" font-size="24" font-weight="650" fill="#2967BB" text-anchor="start">C9 Store.run</text>
+<text x="80" y="752" font-size="24" font-weight="400" fill="#2967BB" text-anchor="start">commit_model + planned</text>
+<text x="80" y="789" font-size="24" font-weight="400" fill="#2967BB" text-anchor="start">mark_running / commit_tool</text>
+<g id="edge-D6">
+<polyline points="375,1080 540,1080 540,650 615,650" fill="none" stroke="#23845E" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="11 8"/>
+<polygon points="615,650 602,644 602,656" fill="#23845E"/>
+</g>
+<text x="400" y="1130" font-size="24" font-weight="650" fill="#23845E" text-anchor="start">D6 记录</text>
+<text x="400" y="1168" font-size="24" font-weight="400" fill="#23845E" text-anchor="start">提交回执</text>
+<g id="edge-C8">
+<polyline points="615,690 565,690 565,1335 600,1335" fill="none" stroke="#2967BB" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<polygon points="600,1335 587,1329 587,1341" fill="#2967BB"/>
+</g>
+<g id="edge-D5">
+<polyline points="900,1280 900,1250 580,1250 580,705 690,705 690,690" fill="none" stroke="#23845E" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="11 8"/>
+<polygon points="690,690 684,703 696,703" fill="#23845E"/>
+</g>
+<g id="edge-C10">
+<polyline points="1260,1220 1260,1280" fill="none" stroke="#2967BB" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<polygon points="1260,1280 1254,1267 1266,1267" fill="#2967BB"/>
+</g>
+<text x="1270" y="1258" font-size="24" font-weight="650" fill="#2967BB" text-anchor="start">C10 入队</text>
+<g id="edge-D7">
+<polyline points="1530,1280 1530,1220" fill="none" stroke="#23845E" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="11 8"/>
+<polygon points="1530,1220 1524,1233 1536,1233" fill="#23845E"/>
+</g>
+<text x="1405" y="1258" font-size="24" font-weight="650" fill="#23845E" text-anchor="start">D7 结果</text>
+<g id="edge-C11">
+<polyline points="1550,1350 1690,1350" fill="none" stroke="#2967BB" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<polygon points="1690,1350 1677,1344 1677,1356" fill="#2967BB"/>
+</g>
+<text x="1580" y="1295" font-size="24" font-weight="650" fill="#2967BB" text-anchor="start">C11 调用</text>
+<text x="1580" y="1328" font-size="24" font-weight="400" fill="#2967BB" text-anchor="start">stdio</text>
+<g id="edge-D8">
+<polyline points="1690,1410 1550,1410" fill="none" stroke="#23845E" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="11 8"/>
+<polygon points="1550,1410 1563,1404 1563,1416" fill="#23845E"/>
+</g>
+<text x="1580" y="1452" font-size="24" font-weight="650" fill="#23845E" text-anchor="start">D8 结果</text>
+<g id="edge-C12">
+<polyline points="1750,1440 1750,1550" fill="none" stroke="#2967BB" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<polygon points="1750,1550 1744,1537 1756,1537" fill="#2967BB"/>
+</g>
+<text x="1780" y="1484" font-size="24" font-weight="650" fill="#2967BB" text-anchor="start">C12 页面操作</text>
+<g id="edge-D9">
+<polyline points="2080,1550 2080,1440" fill="none" stroke="#23845E" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="11 8"/>
+<polygon points="2080,1440 2074,1453 2086,1453" fill="#23845E"/>
+</g>
+<text x="1780" y="1525" font-size="24" font-weight="650" fill="#23845E" text-anchor="start">D9 页面结果</text>
+<g id="edge-C13">
+<polyline points="160,1220 160,1575" fill="none" stroke="#2967BB" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<polygon points="160,1575 154,1562 166,1562" fill="#2967BB"/>
+</g>
+<text x="185" y="1480" font-size="24" font-weight="650" fill="#2967BB" text-anchor="start">C13 SQL</text>
+<g id="edge-D10">
+<polyline points="330,1575 330,1220" fill="none" stroke="#23845E" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="11 8"/>
+<polygon points="330,1220 324,1233 336,1233" fill="#23845E"/>
+</g>
+<text x="185" y="1520" font-size="24" font-weight="650" fill="#23845E" text-anchor="start">D10 回执</text>
+<g id="edge-C14">
+<polyline points="710,1410 710,1575" fill="none" stroke="#2967BB" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<polygon points="710,1575 704,1562 716,1562" fill="#2967BB"/>
+</g>
+<text x="735" y="1480" font-size="24" font-weight="650" fill="#2967BB" text-anchor="start">C14 快照</text>
+<g id="edge-D11">
+<polyline points="960,1575 960,1410" fill="none" stroke="#23845E" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="11 8"/>
+<polygon points="960,1410 954,1423 966,1423" fill="#23845E"/>
+</g>
+<text x="735" y="1520" font-size="24" font-weight="650" fill="#23845E" text-anchor="start">D11 SHA/状态</text>
+<g id="edge-C15">
+<polyline points="1190,1180 1120,1180 1120,1630 1190,1630" fill="none" stroke="#2967BB" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<polygon points="1190,1630 1177,1624 1177,1636" fill="#2967BB"/>
+</g>
+<text x="1140" y="1480" font-size="24" font-weight="650" fill="#2967BB" text-anchor="start">C15 文件/Shell</text>
+<g id="edge-D12">
+<polyline points="1190,1695 1080,1695 1080,1245 1190,1245 1190,1220" fill="none" stroke="#23845E" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="11 8"/>
+<polygon points="1190,1220 1184,1233 1196,1233" fill="#23845E"/>
+</g>
+<text x="1140" y="1518" font-size="24" font-weight="650" fill="#23845E" text-anchor="start">D12 内容/结果</text>
+<circle cx="1120" cy="1245" r="7" fill="#F5F8FD"/>
+<line x1="1120" y1="1235" x2="1120" y2="1255" stroke="#2967BB" stroke-width="3"/>
+</g></svg>

@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1700" height="1060" viewBox="0 0 1700 1060">
+<g font-family="Noto Sans SC, PingFang SC, Arial, sans-serif">
+<rect width="1700" height="1060" fill="#f8fafc"/>
+<text x="60" y="65" font-size="36" fill="#0f172a" font-weight="700" text-anchor="start">Textual TUI 与事件消费 · 当前实现</text>
+<text x="60" y="111" font-size="24" fill="#475569" font-weight="400" text-anchor="start">C：蓝色实线控制调用；D：绿色虚线 Event 数据。箭头指向接收方。</text>
+<text x="60" y="151" font-size="24" fill="#475569" font-weight="400" text-anchor="start">同一 Python 进程；consumer 按 event.type 分派，三种事件分别处理。</text>
+<g id="input-button">
+<rect x="60" y="210" width="360" height="165" rx="22" fill="#e0f2fe" stroke="#0284c7" stroke-width="2"/>
+<text x="85" y="253" font-size="30" fill="#0f172a" font-weight="650" text-anchor="start">Input / Button</text>
+<text x="85" y="299" font-size="24" fill="#334155" font-weight="400" text-anchor="start">任务输入 / 问题答复 / 停止</text>
+<text x="85" y="341" font-size="24" fill="#334155" font-weight="400" text-anchor="start">TUI 直接调用 Runtime 接口</text>
+</g>
+<g id="runtime-interfaces">
+<rect x="580" y="210" width="420" height="165" rx="22" fill="#ede9fe" stroke="#7c3aed" stroke-width="2"/>
+<text x="605" y="253" font-size="30" fill="#0f172a" font-weight="650" text-anchor="start">Runtime</text>
+<text x="605" y="299" font-size="24" fill="#334155" font-weight="400" text-anchor="start">submit / answer / cancel</text>
+<text x="605" y="341" font-size="24" fill="#334155" font-weight="400" text-anchor="start">submit 创建 Task；单活跃 Turn</text>
+</g>
+<g id="event-consumer">
+<rect x="1160" y="210" width="470" height="165" rx="22" fill="#e0e7ff" stroke="#4f46e5" stroke-width="2"/>
+<text x="1185" y="253" font-size="28" fill="#0f172a" font-weight="650" text-anchor="start">Event Queue + consumer</text>
+<text x="1185" y="299" font-size="24" fill="#334155" font-weight="400" text-anchor="start">Queue(512)；可反压</text>
+<text x="1185" y="341" font-size="24" fill="#334155" font-weight="400" text-anchor="start">consume_events 按类型分派</text>
+</g>
+<g id="delta-draft">
+<rect x="60" y="650" width="460" height="245" rx="22" fill="#ecfdf5" stroke="#059669" stroke-width="2"/>
+<text x="85" y="696" font-size="30" fill="#0f172a" font-weight="650" text-anchor="start">model.delta → 草稿</text>
+<text x="85" y="740" font-size="24" fill="#334155" font-weight="400" text-anchor="start">按 draft_id 累积 pending</text>
+<text x="85" y="779" font-size="24" fill="#334155" font-weight="400" text-anchor="start">60ms 定时 flush_tokens()</text>
+<text x="85" y="818" font-size="24" fill="#334155" font-weight="400" text-anchor="start">追加 / 创建草稿气泡</text>
+<text x="85" y="862" font-size="23" fill="#475569" font-weight="400" text-anchor="start">只合并展示，不触发 committed</text>
+</g>
+<g id="committed-stable">
+<rect x="610" y="650" width="470" height="245" rx="22" fill="#fef3c7" stroke="#d97706" stroke-width="2"/>
+<text x="635" y="696" font-size="30" fill="#0f172a" font-weight="650" text-anchor="start">model.committed</text>
+<text x="635" y="740" font-size="24" fill="#334155" font-weight="400" text-anchor="start">先 await flush_tokens()</text>
+<text x="635" y="779" font-size="24" fill="#334155" font-weight="400" text-anchor="start">draft_id → message_id</text>
+<text x="635" y="818" font-size="24" fill="#334155" font-weight="400" text-anchor="start">草稿转稳定消息；替换正文</text>
+<text x="635" y="862" font-size="23" fill="#475569" font-weight="400" text-anchor="start">无草稿：非空正文才创建气泡</text>
+</g>
+<g id="finished-state">
+<rect x="1170" y="650" width="460" height="245" rx="22" fill="#e2e8f0" stroke="#475569" stroke-width="2"/>
+<text x="1195" y="696" font-size="29" fill="#0f172a" font-weight="650" text-anchor="start">turn.finished → 最终状态</text>
+<text x="1195" y="740" font-size="24" fill="#334155" font-weight="400" text-anchor="start">先 flush_tokens()</text>
+<text x="1195" y="779" font-size="24" fill="#334155" font-weight="400" text-anchor="start">更新 last_result / 状态 / 用量</text>
+<text x="1195" y="818" font-size="24" fill="#334155" font-weight="400" text-anchor="start">turn_done.set() 解除等待</text>
+<text x="1195" y="862" font-size="23" fill="#475569" font-weight="400" text-anchor="start">保留 status + stop_reason</text>
+</g>
+<g id="edge-C1"><polyline points="420,290 580,290" fill="none" stroke="#0369a1" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<polygon points="580,290 568,284 568,296" fill="#0369a1"/></g>
+<text x="500" y="235" font-size="24" fill="#0369a1" font-weight="650" text-anchor="middle">C1</text>
+<text x="500" y="272" font-size="23" fill="#0369a1" font-weight="400" text-anchor="middle">直接调用</text>
+<g id="edge-D1"><polyline points="1000,290 1160,290" fill="none" stroke="#047857" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="10 7"/>
+<polygon points="1160,290 1148,284 1148,296" fill="#047857"/></g>
+<text x="1080" y="235" font-size="24" fill="#047857" font-weight="650" text-anchor="middle">D1</text>
+<text x="1080" y="272" font-size="23" fill="#047857" font-weight="400" text-anchor="middle">emit / 入队</text>
+<g id="edge-D2"><polyline points="1280,375 1280,460 290,460 290,650" fill="none" stroke="#047857" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="10 7"/>
+<polygon points="290,650 284,638 296,638" fill="#047857"/></g>
+<text x="320" y="439" font-size="25" fill="#047857" font-weight="650" text-anchor="start">D2 model.delta</text>
+<text x="320" y="497" font-size="23" fill="#047857" font-weight="400" text-anchor="start">draft_id / text</text>
+<g id="edge-D3"><polyline points="1395,375 1395,515 845,515 845,650" fill="none" stroke="#047857" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="10 7"/>
+<polygon points="845,650 839,638 851,638" fill="#047857"/></g>
+<text x="865" y="493" font-size="25" fill="#047857" font-weight="650" text-anchor="start">D3 model.committed</text>
+<text x="865" y="553" font-size="23" fill="#047857" font-weight="400" text-anchor="start">draft_id / message_id / text</text>
+<g id="edge-D4"><polyline points="1510,375 1510,570 1400,570 1400,650" fill="none" stroke="#047857" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="10 7"/>
+<polygon points="1400,650 1394,638 1406,638" fill="#047857"/></g>
+<text x="1420" y="610" font-size="24" fill="#047857" font-weight="650" text-anchor="start">D4 turn.finished</text>
+<text x="1060" y="622" font-size="23" fill="#047857" font-weight="400" text-anchor="start">status / stop_reason / usage</text>
+<rect x="60" y="938" width="1570" height="78" rx="16" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="2"/>
+<text x="85" y="970" font-size="24" fill="#475569" font-weight="400" text-anchor="start">会话查询 / 人工恢复：TUI 查询 Store；恢复需显式确认，独立于以上事件分支。</text>
+<text x="85" y="1005" font-size="23" fill="#475569" font-weight="400" text-anchor="start">model.committed 与 turn.finished 由 Runtime 发布；60ms 定时器只合并增量展示。</text>
+</g></svg>

@@ -1,0 +1,142 @@
+{
+  "version": "0.1.0",
+  "validation_date": "2026-11-11",
+  "scope": "local_python_cli_tui_single_git",
+  "automated_tests": 28,
+  "live": {
+    "right_code_native_tool_roundtrip": true,
+    "playwright_mcp_tools": 25,
+    "travel_tui": true,
+    "multiturn_tui": true,
+    "coding_fixture_tests_before_exit": 1,
+    "coding_fixture_tests_after_exit": 0,
+    "fixture_test_file_unchanged": true,
+    "before_after_snapshots_ready": true,
+    "restarted_session_messages": 24,
+    "curator_live_slow_steps": 1,
+    "curator_timeout_fallback_observed": true,
+    "explicit_memory_new_session_hits": 1,
+    "real_pty_browser_disabled_exit": 0,
+    "real_pty_browser_enabled_exit": 0,
+    "ordinary_shell_rg": "/opt/homebrew/bin/rg"
+  },
+  "cloud_document": {
+    "url": "https://bytedance.larkoffice.com/docx/MdjydeNRXopJqbxd0frcFbtinFd",
+    "heading_level_1": 13,
+    "heading_level_2": 62,
+    "preserved_boards": 18,
+    "native_tui_images": 5,
+    "verified_source_code_blocks": 44,
+    "all_boards_updated_and_visually_verified": true,
+    "full_text_matched_excluding_board_source_metadata": true
+  },
+  "ci": "not_run",
+  "business_repository_modified": false,
+  "screenshots": [
+    {
+      "path": "docs/images/01-travel.png",
+      "sha256": "8990402856bbb00136bd8abe0f3564fb04c91f03e42714c6cda37a1b0f26eadc"
+    },
+    {
+      "path": "docs/images/02-followup.png",
+      "sha256": "1d6d68616a4f82599c4e0faaa51132f7a954662e16f1be595a87c6f46eeaee61"
+    },
+    {
+      "path": "docs/images/03-coding.png",
+      "sha256": "9526851555209996c24e242e68f58fe4b05ee80f5e3faacb514976bfad37fc42"
+    },
+    {
+      "path": "docs/images/05-resumed.png",
+      "sha256": "eb61a7d24cb1179dd950dccf220785a8e464f50946c62e3dd2ebe2034d3b8752"
+    },
+    {
+      "path": "docs/images/06-slow-context.png",
+      "sha256": "fac9f68504005e2be730c5a0a989b99740fd110b4136883b8c0b36688ca6198c"
+    }
+  ],
+  "code_commit": "3e5540d",
+  "checks": {
+    "compileall": "passed",
+    "ruff_check": "passed",
+    "ruff_format_check": "passed (verbatim documentation excerpts excluded)",
+    "pytest": "28 passed"
+  },
+  "diagram_sources": [
+    {
+      "path": "docs/diagrams/data-model.mmd",
+      "sha256": "62b6c3b3939ec0571246876cfe98b28a31a42a02fff93e34f1f8aa61a605dbb5"
+    },
+    {
+      "path": "docs/diagrams/domains.svg",
+      "sha256": "89f33bb5d868e7dd85154b08fc359dfbe5812f4b20ab2a549e9c5af71b6c7704"
+    },
+    {
+      "path": "docs/diagrams/m01-config.svg",
+      "sha256": "96332b4df231cea5ed04d9a0eba99ea19b19a22478d871cdfb16a785e1bc0261"
+    },
+    {
+      "path": "docs/diagrams/m02-tui.svg",
+      "sha256": "ea6e67feee31a64614229cf412c6dee4bcd7dc05c7614cd8fcc0b965f40121b8"
+    },
+    {
+      "path": "docs/diagrams/m03-runtime.svg",
+      "sha256": "0381d1fcc3600f810ed2bfa37c3754c3e2e54e8e6c83f674873a4ea86c2af0f3"
+    },
+    {
+      "path": "docs/diagrams/m04-loop.svg",
+      "sha256": "3bbbc28f328afa11ba43eb878e3d3a36b9888e11a0fda3cca4a0c9297ce28649"
+    },
+    {
+      "path": "docs/diagrams/m05-provider.svg",
+      "sha256": "6185f8de210a1679cbae3a5c9070125bbf3b60957aedc96f816508c789f6c32e"
+    },
+    {
+      "path": "docs/diagrams/m06-tools.svg",
+      "sha256": "46c5ce52444bd8eeb8be5ebd74537c8de0b243214323737dda3545fb11ab18b9"
+    },
+    {
+      "path": "docs/diagrams/m07-browser.svg",
+      "sha256": "c44e27186cb015aa2ba8399fd3da2df2a12cfbe4a879b8d504a33a2583d38621"
+    },
+    {
+      "path": "docs/diagrams/m08-context.svg",
+      "sha256": "3de1b3d1148cd62017c322bc05352a10feea776d7f9d18e00982ca5e3c76c7e1"
+    },
+    {
+      "path": "docs/diagrams/m08-skills.svg",
+      "sha256": "9ca685b1455d903c4a18ddc85fe8f883226a6b90820dff8f6875c832c325909d"
+    },
+    {
+      "path": "docs/diagrams/m09-store.svg",
+      "sha256": "18e39450e9925eb49575c57fd35151f2d7037e8545700f224c4cba4161bbee8c"
+    },
+    {
+      "path": "docs/diagrams/m10-memory.svg",
+      "sha256": "aa444bb649500d20e9f601a0792332a2aafde30e927ffd3bc5f7fe8b8ccceb38"
+    },
+    {
+      "path": "docs/diagrams/m11-checkpoint.svg",
+      "sha256": "31d70452e6eb74a3831f7c65622146f1f53b2ea9ee7dea04df56d49dd004ac35"
+    },
+    {
+      "path": "docs/diagrams/m12-recovery.svg",
+      "sha256": "f9ee4515a80745dd8bc752c64b87565ebc204c2ff02479536fb351ce6e325394"
+    },
+    {
+      "path": "docs/diagrams/overall.svg",
+      "sha256": "464fe9ca6e8f87356c2c63ba804fd402215def3af19a8167444c774b49ca7768"
+    },
+    {
+      "path": "docs/diagrams/recovery-state.mmd",
+      "sha256": "9dedfcb56beddf19b636821d51820e96ed27e5733a280a2c6fb1a4c4f861c116"
+    },
+    {
+      "path": "docs/diagrams/request-sequence.mmd",
+      "sha256": "67366e08e12a09fb13b188d0d568c1318f748112daca29b0cc7be423fbe151b9"
+    },
+    {
+      "path": "docs/diagrams/request-sequence.png",
+      "sha256": "e013e61745fc710d77598600fb987725fadf78f85ad7a8f0091f8ec19b0c67ef"
+    }
+  ]
+}

@@ -1,0 +1,200 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1500" viewBox="0 0 1800 1500" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif" font-size="24" fill="#24354e">
+<title>Kaki 当前实现：领域分层、所有权与事实写入</title>
+<desc>CLI/TUI 提供输入、展示与人工确认。Runtime 管理正常 Turn、lease 与终态，AgentLoop 编排有界模型工具迭代。上下文域拥有窗口规划、Curator、Archive、Memory 与 Skills。Provider、ToolRegistry、BrowserMcp 和 Checkpoint 是同进程适配对象；Playwright MCP 为 stdio 子进程。所有 SQLite 写入都由 Store 的单 worker 完成。蓝实线 C 是控制动作，绿虚线 D 是具体数据。</desc>
+<rect width="1800" height="1500" fill="#f7f9fd"/>
+<text x="40" y="51" font-size="40" font-weight="700" fill="#172c49">Kaki 当前分层、所有权与事实边界</text>
+<text x="40" y="94" fill="#5b6d85">当前实现 · Python 单进程 / async 直接调用 · 单 workspace / 单活跃 Turn</text>
+<line x1="1390" y1="45" x2="1432" y2="45" stroke="#2863d5" stroke-width="3.2"/>
+<polygon points="1442,45 1430,38 1430,52" fill="#2863d5"/>
+<text x="1454" y="54" font-size="23" fill="#566a85">C 控制</text>
+<line x1="1610" y1="45" x2="1652" y2="45" stroke="#188563" stroke-width="3.2" stroke-dasharray="10 7"/>
+<polygon points="1662,45 1650,38 1650,52" fill="#188563"/>
+<text x="1674" y="54" font-size="23" fill="#566a85">D 数据</text>
+
+<!-- 交互：不拥有领域终态；当前实现保留直接查询及人工恢复入口 -->
+<g id="interaction">
+<rect x="40" y="195" width="430" height="270" rx="26" fill="#eef3fd" stroke="#91aee0" stroke-width="2.5"/>
+<circle cx="76" cy="234" r="20" fill="#557ac1"/>
+<path d="M65 225 H87 V239 H75 L69 245 V239 H65 Z" fill="none" stroke="#ffffff" stroke-width="2.3" stroke-linejoin="round"/>
+<text x="112" y="246" font-size="31" font-weight="700">交互层 CLI / TUI</text>
+<text x="68" y="285">输入、展示与人工确认</text>
+<text x="68" y="325">调用 Runtime 正常 Turn 接口</text>
+<text x="68" y="363" fill="#5c7090">不定义 Turn 终态</text>
+<text x="68" y="407" font-size="23" font-weight="600" fill="#157959">D9 会话 / 历史 / 记忆视图</text>
+<text x="68" y="447" font-size="23" fill="#5c7090">/undo 预览，确认后恢复</text>
+</g>
+
+<!-- 应用：生命周期与执行编排 -->
+<g id="application">
+<rect x="620" y="195" width="680" height="430" rx="25" fill="#ffffff" stroke="#3c6fc6" stroke-width="3.5"/>
+<path d="M645 195 H1275 Q1300 195 1300 220 V258 H620 V220 Q620 195 645 195 Z" fill="#e2ebfe"/>
+<text x="650" y="238" font-size="32" font-weight="700" fill="#234c91">应用层 · 生命周期与执行</text>
+<text x="650" y="296" font-size="28" font-weight="700">Runtime · 正常 Turn / lease / 终态</text>
+<text x="650" y="334">submit / cancel / ask_user / sessions</text>
+<text x="650" y="369">会话切换、幂等请求、恢复事实对账</text>
+<line x1="650" y1="392" x2="1270" y2="392" stroke="#d5e1f4" stroke-width="2"/>
+<text x="650" y="437" font-size="28" font-weight="700">AgentLoop · 有界迭代与恢复策略</text>
+<text x="650" y="477">完整模型输出先提交；执行意图先落盘</text>
+<text x="650" y="516" font-size="23">追加已提交观测 · 有限重试 / 应急省略</text>
+<text x="650" y="554" font-size="23">返回 TurnResult；窗口选择回到上下文域</text>
+<text x="650" y="600" font-size="23" fill="#5d718e">终态仅 Runtime 发布；UNKNOWN 不自动重放</text>
+</g>
+
+<!-- types 是共享值契约，不是有 I/O 的服务 -->
+<g id="shared-types">
+<path d="M1420 195 H1734 L1760 221 V505 H1400 V215 Q1400 195 1420 195 Z" fill="#f1eff9" stroke="#afa4cc" stroke-width="2.5"/>
+<path d="M1734 195 V221 H1760" fill="none" stroke="#afa4cc" stroke-width="2"/>
+<text x="1425" y="239" font-size="29" font-weight="700">领域值 types.py</text>
+<text x="1425" y="279" font-size="23" fill="#726683">跨层传值，无 I/O</text>
+<text x="1425" y="318">Message / ToolCall</text>
+<text x="1425" y="353">ToolResult / TurnResult</text>
+<text x="1425" y="388">TokenBudget</text>
+<text x="1425" y="423">ContextPlan</text>
+<text x="1425" y="480" font-size="23" fill="#726683">共享契约，不是额外服务</text>
+</g>
+
+<!-- 上下文域：规划与派生数据的唯一语义边界 -->
+<g id="context-domain">
+<path d="M68 700 H712 Q740 700 740 728 V1122 Q740 1150 712 1150 H68 Q40 1150 40 1122 V728 Q40 700 68 700 Z" fill="#edf7f2" stroke="#75ae92" stroke-width="2.8"/>
+<circle cx="77" cy="739" r="20" fill="#428866"/>
+<path d="M66 731 H88 M66 739 H84 M66 747 H80" fill="none" stroke="#ffffff" stroke-width="2.4" stroke-linecap="round"/>
+<text x="112" y="751" font-size="31" font-weight="700">上下文域 · ContextEngine</text>
+<text x="68" y="793" font-size="23" font-weight="600">窗口选择、预算与来源的唯一规划边界</text>
+<text x="68" y="833" font-size="25">assemble / rebalance / after_turn</text>
+<line x1="68" y1="852" x2="712" y2="852" stroke="#c8dfd2" stroke-width="2"/>
+<text x="68" y="890" font-size="27" font-weight="700">Curator · 8 类私有工具</text>
+<text x="68" y="925" font-size="23">budget · archive · retrieve · search</text>
+<text x="68" y="958" font-size="23">memory · relevance · state · build</text>
+<text x="68" y="994" font-size="23" fill="#56745e">仅内部规划，不接代码 / Shell / 浏览器</text>
+<line x1="68" y1="1010" x2="712" y2="1010" stroke="#c8dfd2" stroke-width="2"/>
+<text x="68" y="1044" font-size="23">Archive：原始消息派生副本 / hash / 引用</text>
+<text x="68" y="1077" font-size="23">Memory：显式项目记忆 / 来源 / 版本</text>
+<text x="68" y="1110" font-size="23">Skills：本地 SKILL.md / 版本 / 引用范围</text>
+<text x="68" y="1142" font-size="23" fill="#56745e">派生状态：manifest / working / plan</text>
+</g>
+
+<!-- 集成适配：对象内调用，不画成必选微服务 -->
+<text x="1390" y="625" font-size="30" font-weight="700" fill="#647590">集成适配</text>
+<g id="provider">
+<rect x="960" y="745" width="360" height="180" rx="27" fill="#eef2f8" stroke="#99acc6" stroke-width="2.5" stroke-dasharray="10 7"/>
+<text x="986" y="785" font-size="30" font-weight="700">Provider</text>
+<text x="986" y="828">RightCode Responses</text>
+<text x="986" y="866" font-size="23">native_items 原序重放</text>
+<text x="986" y="903" font-size="23" fill="#62748e">提交：model_calls</text>
+</g>
+<g id="tool-registry">
+<rect x="1380" y="745" width="380" height="210" rx="27" fill="#eef2f8" stroke="#99acc6" stroke-width="2.5" stroke-dasharray="10 7"/>
+<text x="1406" y="785" font-size="30" font-weight="700">ToolRegistry</text>
+<text x="1406" y="826" font-size="23">schema 校验 · 效果顺序</text>
+<text x="1406" y="862" font-size="23">仅安全 READ 可并行</text>
+<text x="1406" y="898" font-size="23">文件 / Shell / 领域工具</text>
+<text x="1406" y="936" font-size="23" fill="#62748e">知识工具回调 Context</text>
+</g>
+<g id="browser-adapter">
+<rect x="960" y="995" width="360" height="175" rx="27" fill="#eef2f8" stroke="#99acc6" stroke-width="2.5" stroke-dasharray="10 7"/>
+<text x="986" y="1035" font-size="30" font-weight="700">BrowserMcp</text>
+<text x="986" y="1073" font-size="23">actor 队列 · stdio</text>
+<text x="986" y="1108" font-size="23">独立 profile / 工具别名</text>
+<text x="986" y="1144" font-size="23" fill="#62748e">MCP parts → ToolResult</text>
+</g>
+<g id="checkpoint">
+<rect x="1400" y="995" width="360" height="175" rx="27" fill="#fff4e7" stroke="#d6af7b" stroke-width="2.5"/>
+<text x="1426" y="1035" font-size="30" font-weight="700">Checkpoint</text>
+<text x="1426" y="1073" font-size="23">独立 shadow Git</text>
+<text x="1426" y="1108" font-size="23">plan / apply 冲突保护</text>
+<text x="1426" y="1144" font-size="23" fill="#8a734f">用户 Git 索引 / 分支不动</text>
+</g>
+<g id="browser-child">
+<rect x="960" y="1215" width="420" height="65" rx="24" fill="#f5f6f9" stroke="#9eaab9" stroke-width="2.5" stroke-dasharray="6 6"/>
+<text x="986" y="1257" font-size="24" font-weight="600">Playwright MCP（可选子进程）</text>
+</g>
+
+<!-- 事实存储：唯一物理写入者 -->
+<g id="store">
+<rect x="40" y="1310" width="1720" height="160" rx="24" fill="#e9edf7" stroke="#8e9fbd" stroke-width="3"/>
+<path d="M65 1336 C65 1327 102 1327 102 1336 V1360 C102 1370 65 1370 65 1360 Z M65 1336 C65 1346 102 1346 102 1336" fill="none" stroke="#667ea5" stroke-width="2.5"/>
+<text x="122" y="1351" font-size="29" font-weight="700">Store：所有 SQLite 表的唯一 SQL 写入方 · 单连接 / 单 worker / 短事务</text>
+<text x="68" y="1388" font-size="23">sessions · turns · messages · tool_runs · model_calls · events</text>
+<text x="68" y="1421" font-size="23">context_state · archives · memories · snapshots</text>
+<text x="68" y="1457" font-size="23" fill="#586d8e">调用方提交语义，Store 分配 ID / 顺序并提交事实；归档、窗口裁剪不删除原始 messages。</text>
+</g>
+
+<!-- 控制 C：蓝实线；C8 为当前 TUI 的直接人工恢复路径 -->
+<g fill="none" stroke="#2863d5" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round">
+<polyline points="470,330 608,330"/>
+<polyline points="680,625 680,688"/>
+<polyline points="1080,625 1080,733"/>
+<polyline points="740,800 948,800"/>
+<polyline points="1260,625 1260,705 1470,705 1470,733"/>
+<polyline points="1380,900 1360,900 1360,970 1140,970 1140,983"/>
+<polyline points="1100,1170 1100,1203"/>
+<polyline points="420,195 420,155 1790,155 1790,1050 1772,1050"/>
+<polyline points="1300,580 1770,580 1770,1120 1772,1120"/>
+</g>
+<g fill="#2863d5">
+<polygon points="620,330 607,323 607,337"/>
+<polygon points="680,700 673,687 687,687"/>
+<polygon points="1080,745 1073,732 1087,732"/>
+<polygon points="960,800 947,793 947,807"/>
+<polygon points="1470,745 1463,732 1477,732"/>
+<polygon points="1140,995 1133,982 1147,982"/>
+<polygon points="1100,1215 1093,1202 1107,1202"/>
+<polygon points="1760,1050 1773,1043 1773,1057"/>
+<polygon points="1760,1120 1773,1113 1773,1127"/>
+</g>
+<g fill="#245cc5" font-size="23" font-weight="600">
+<text x="485" y="308">C1 请求</text>
+<text x="350" y="674">C2 assemble / rebalance</text>
+<text x="960" y="674">C3 推理</text>
+<text x="755" y="780">C4 规划请求</text>
+<text x="1300" y="730">C5 分派工具</text>
+<text x="1160" y="960">C6 浏览器调用</text>
+<text x="1120" y="1205">C7 stdio</text>
+<text x="720" y="139">C8 /undo 预览；确认后 apply（TUI 直达）</text>
+<text x="1400" y="565">C9 capture(before/after)</text>
+</g>
+
+<!-- 数据 D：绿虚线；明确各提交方，最终只有 Store 执行 SQL -->
+<g fill="none" stroke="#188563" stroke-width="3.2" stroke-dasharray="10 7" stroke-linecap="round" stroke-linejoin="round">
+<polyline points="620,415 482,415"/>
+<polyline points="710,700 710,637"/>
+<polyline points="1200,745 1200,637"/>
+<polyline points="960,860 752,860"/>
+<polyline points="1710,745 1710,645 1275,645 1275,637"/>
+<polyline points="1320,1040 1370,1040 1370,980 1480,980 1480,967"/>
+<polyline points="450,1150 450,1298"/>
+<polyline points="620,575 20,575 20,1365 28,1365"/>
+<polyline points="40,1415 10,1415 10,395 28,395"/>
+<polyline points="960,890 900,890 900,1298"/>
+<polyline points="1560,1170 1560,1298"/>
+<polyline points="1290,1215 1290,1182"/>
+</g>
+<g fill="#188563">
+<polygon points="470,415 483,408 483,422"/>
+<polygon points="710,625 703,638 717,638"/>
+<polygon points="1200,625 1193,638 1207,638"/>
+<polygon points="740,860 753,853 753,867"/>
+<polygon points="1275,625 1268,638 1282,638"/>
+<polygon points="1480,955 1473,968 1487,968"/>
+<polygon points="450,1310 443,1297 457,1297"/>
+<polygon points="40,1365 27,1358 27,1372"/>
+<polygon points="40,395 27,388 27,402"/>
+<polygon points="900,1310 893,1297 907,1297"/>
+<polygon points="1560,1310 1553,1297 1567,1297"/>
+<polygon points="1290,1170 1283,1183 1297,1183"/>
+</g>
+<g fill="#157959" font-size="23" font-weight="600">
+<text x="485" y="449">D1 Event</text>
+<text x="750" y="674">D2 窗口/溯源</text>
+<text x="1100" y="674">D3 响应</text>
+<text x="755" y="898">D4 模型响应</text>
+<text x="1490" y="674">D5 ToolResult</text>
+<text x="1510" y="984">D6 结果</text>
+<text x="480" y="1208">D7 派生状态 / 归档索引</text>
+<text x="480" y="1243" font-weight="400">memories（显式来源）</text>
+<text x="45" y="550">D8 会话 / Turn / 消息 / 工具执行事实</text>
+<text x="660" y="1285">D10 model_calls</text>
+<text x="1580" y="1235">D11 快照元数据</text>
+<text x="1330" y="1205">D12 MCP parts</text>
+</g>
+</svg>

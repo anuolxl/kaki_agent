@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1560" height="860" viewBox="0 0 1560 860">
+  <rect width="1560" height="860" fill="#f8fafc" />
+  <text x="60" y="64" font-size="32" font-weight="700" fill="#0f172a" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif">独立快照与冲突恢复 · 当前实现</text>
+  <text x="60" y="110" font-size="23" fill="#475569" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif">C：控制调用，蓝色实线；D：数据与结果，绿色虚线；箭头指向接收方。</text>
+  <polyline points="780,306 780,478" fill="none" stroke="#047857" stroke-width="3" stroke-dasharray="10 7" />
+  <polygon points="780,478 774,467 786,467" fill="#047857" />
+  <rect x="90" y="170" width="370" height="136" rx="22" fill="#e0f2fe" stroke="#0284c7" stroke-width="2" />
+  <text x="275.0" y="209" text-anchor="middle" font-size="27" font-weight="600" fill="#0f172a" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif">单 Git 工作树</text>
+  <text x="275.0" y="257" text-anchor="middle" font-size="23" fill="#334155" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif">已有修改按排除规则入基线</text>
+  <rect x="595" y="170" width="370" height="136" rx="22" fill="#ede9fe" stroke="#7c3aed" stroke-width="2" />
+  <text x="780.0" y="209" text-anchor="middle" font-size="27" font-weight="600" fill="#0f172a" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif">capture(before)</text>
+  <text x="780.0" y="257" text-anchor="middle" font-size="21" fill="#334155" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif">按策略；独立 git-dir / raw 字节</text>
+  <path d="M 1125 170 H 1445 L 1470 238.0 L 1445 306 H 1125 L 1100 238.0 Z" fill="#e0e7ff" stroke="#4f46e5" stroke-width="2" />
+  <text x="1285.0" y="209" text-anchor="middle" font-size="27" font-weight="600" fill="#0f172a" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif">本轮执行</text>
+  <text x="1285.0" y="257" text-anchor="middle" font-size="23" fill="#334155" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif">文件 / Shell / 外部操作</text>
+  <rect x="1100" y="478" width="370" height="136" rx="22" fill="#ecfdf5" stroke="#059669" stroke-width="2" />
+  <text x="1285.0" y="517" text-anchor="middle" font-size="27" font-weight="600" fill="#0f172a" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif">capture(after)</text>
+  <text x="1285.0" y="565" text-anchor="middle" font-size="21" fill="#334155" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif">按策略；正常 / 取消 / 失败尽力</text>
+  <rect x="595" y="478" width="370" height="136" rx="22" fill="#fef3c7" stroke="#d97706" stroke-width="2" />
+  <text x="780.0" y="517" text-anchor="middle" font-size="27" font-weight="600" fill="#0f172a" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif">plan_restore</text>
+  <text x="780.0" y="565" text-anchor="middle" font-size="23" fill="#334155" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif">快照 diff + oid / mode 比对</text>
+  <path d="M 90 503 Q 275.0 460 460 503 L 460 596 Q 275.0 639 90 596 Z" fill="#e2e8f0" stroke="#475569" stroke-width="2" />
+  <text x="275.0" y="517" text-anchor="middle" font-size="27" font-weight="600" fill="#0f172a" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif">apply(批准的路径)</text>
+  <text x="275.0" y="565" text-anchor="middle" font-size="21" fill="#334155" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif">批准路径；写前复查 oid + mode</text>
+  <polyline points="460,238.0 585,238.0" fill="none" stroke="#0369a1" stroke-width="3" />
+  <polyline points="585,231.0 595,238.0 585,245.0" fill="none" stroke="#0369a1" stroke-width="3" />
+  <text x="527.5" y="194" text-anchor="middle" font-size="23" font-weight="600" fill="#0369a1" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif">C1</text>
+  <text x="527.5" y="221" text-anchor="middle" font-size="21" fill="#0369a1" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif">按策略取基线</text>
+  <polyline points="965,238.0 1090,238.0" fill="none" stroke="#0369a1" stroke-width="3" />
+  <polyline points="1090,231.0 1100,238.0 1090,245.0" fill="none" stroke="#0369a1" stroke-width="3" />
+  <text x="1032.5" y="194" text-anchor="middle" font-size="23" font-weight="600" fill="#0369a1" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif">C2</text>
+  <text x="1032.5" y="221" text-anchor="middle" font-size="21" fill="#0369a1" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif">运行Turn</text>
+  <polyline points="1285.0,306 1285.0,468" fill="none" stroke="#0369a1" stroke-width="3" />
+  <polyline points="1278.0,468 1285.0,478 1292.0,468" fill="none" stroke="#0369a1" stroke-width="3" />
+  <text x="1305" y="392.0" text-anchor="start" font-size="23" font-weight="600" fill="#0369a1" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif">C3</text>
+  <text x="1305" y="419.0" text-anchor="start" font-size="21" fill="#0369a1" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif">按策略捕获</text>
+  <polyline points="1100,546.0 975,546.0" fill="none" stroke="#047857" stroke-width="3" stroke-dasharray="10 7" />
+  <polyline points="975,539.0 965,546.0 975,553.0" fill="none" stroke="#047857" stroke-width="3" />
+  <text x="1032.5" y="492" text-anchor="middle" font-size="23" font-weight="600" fill="#047857" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif">D1</text>
+  <text x="1032.5" y="519" text-anchor="middle" font-size="21" fill="#047857" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif">after 引用</text>
+  <polyline points="595,546.0 470,546.0" fill="none" stroke="#0369a1" stroke-width="3" />
+  <polyline points="470,539.0 460,546.0 470,553.0" fill="none" stroke="#0369a1" stroke-width="3" />
+  <text x="527.5" y="492" text-anchor="middle" font-size="23" font-weight="600" fill="#0369a1" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif">C4</text>
+  <text x="527.5" y="519" text-anchor="middle" font-size="21" fill="#0369a1" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif">人工确认</text>
+  <text x="800" y="392" font-size="23" fill="#047857" font-weight="600" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif" text-anchor="start">D2</text>
+  <text x="800" y="419" font-size="21" fill="#047857" font-weight="400" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif" text-anchor="start">before 引用</text>
+  <text x="780" y="597" font-size="21" fill="#334155" font-weight="400" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif" text-anchor="middle">权限 / 类型变化也标 conflict</text>
+  <text x="275" y="597" font-size="21" fill="#334155" font-weight="400" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif" text-anchor="middle">恢复前再次检查，冲突不覆盖</text>
+  <text x="60" y="682" font-size="22" fill="#475569" font-weight="400" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif" text-anchor="start">冲突：current_oid ≠ expected_current_oid 或 current_mode ≠ expected_current_mode。</text>
+  <text x="60" y="730" font-size="22" fill="#475569" font-weight="400" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif" text-anchor="start">mode 区分可执行位与文件类型；blob 相同也可能冲突，apply 写入前会再次比对。</text>
+  <text x="60" y="778" font-size="22" fill="#475569" font-weight="400" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif" text-anchor="start">Runtime 按策略调用 before / after；恢复必须两者 ready。shadow Git 不改用户 .git / index。</text>
+  <text x="60" y="826" font-size="22" fill="#475569" font-weight="400" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif" text-anchor="start">用户请求时才预览恢复计划；只应用已批准路径。文件快照不能撤销外部副作用。</text>
+</svg>

@@ -1,0 +1,23 @@
+classDiagram
+    Workspace "1" --> "many" Session : D1 workspace_id限定项目
+    Session "1" --> "many" Turn : D2 session_id归属
+    Turn "1" --> "many" Message : D3 原始消息与turn_id
+    Turn "1" --> "many" ToolRun : D4 执行日志
+    Message --> ToolCall : D5 tool_calls声明
+    ToolRun --> ToolCall : D6 tool_call_id关联
+    ToolRun --> ToolResult : D7 result_json真实观察
+    ToolResult --> ArtifactRef : D8 大输出与图片引用
+    Turn "1" --> "many" ModelCall : D9 main_curator_finalize账本
+    Session --> ContextState : D10 派生窗口状态
+    ContextState --> ContextPlan : D11 选择计划JSON
+    ContextPlan --> Message : D12 稳定消息ID选择
+    AssembledContext --> TokenBudget : D13 budget字段
+    ContextState --> WorkingState : D14 有界当前目标与决定
+    Archive --> Message : D15 精确原文与会话作用域
+    MemoryEntry --> Message : D16 source_ids明确来源
+    LocalSkill --> ContextState : D17 注入来源与版本
+    Turn --> Snapshot : D18 按策略before_after
+    RecoveryPlan --> ToolRun : D19 确定或未知的执行线索
+    RecoveryPlan --> Snapshot : D20 文件现场证据
+    AssembledContext --> Message : D21 messages窗口
+    note "D仅表示数据归属或引用；类框包含dataclass与SQLite/JSON逻辑对象，后者不一定是Python独立类。"

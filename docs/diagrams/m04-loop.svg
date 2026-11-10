@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1560" height="900" viewBox="0 0 1560 900">
+  <rect width="1560" height="900" fill="#f8fafc" />
+  <text x="60" y="64" font-size="32" font-weight="700" fill="#0f172a" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif">模型—工具主循环 · 当前实现</text>
+  <text x="60" y="100" font-size="23" fill="#475569" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif">C：控制调用，蓝色实线；D：数据与结果，绿色虚线；箭头指向接收方。</text>
+  <polyline points="460,238 595,238" fill="none" stroke="#047857" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="10 7" />
+  <polygon points="595.0,238.0 584.0,244.0 584.0,232.0" fill="#047857" />
+  <polyline points="965,238 1100,238" fill="none" stroke="#0369a1" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" />
+  <polygon points="1100.0,238.0 1089.0,244.0 1089.0,232.0" fill="#0369a1" />
+  <polyline points="1285,306 1285,478" fill="none" stroke="#047857" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="10 7" />
+  <polygon points="1285.0,478.0 1279.0,467.0 1291.0,467.0" fill="#047857" />
+  <polyline points="595,546 460,546" fill="none" stroke="#047857" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="10 7" />
+  <polygon points="460.0,546.0 471.0,540.0 471.0,552.0" fill="#047857" />
+  <polyline points="275,478 275,390 780,390 780,306" fill="none" stroke="#0369a1" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" />
+  <polygon points="780.0,306.0 786.0,317.0 774.0,317.0" fill="#0369a1" />
+  <polyline points="1100,600 1015,600 1015,270 965,270" fill="none" stroke="#0369a1" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" />
+  <polygon points="965.0,270.0 976.0,264.0 976.0,276.0" fill="#0369a1" />
+  <polyline points="1285,170 1285,140 840,140 840,170" fill="none" stroke="#0369a1" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" />
+  <polygon points="840.0,170.0 834.0,159.0 846.0,159.0" fill="#0369a1" />
+  <polyline points="1100,546 965,546" fill="none" stroke="#f8fafc" stroke-width="9" />
+  <polyline points="1100,546 965,546" fill="none" stroke="#0369a1" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" />
+  <polygon points="965.0,546.0 976.0,540.0 976.0,552.0" fill="#0369a1" />
+  <rect x="90" y="170" width="370" height="136" rx="22" fill="#e0f2fe" stroke="#0284c7" stroke-width="2" />
+  <text x="275.0" y="209" text-anchor="middle" font-size="27" font-weight="600" fill="#0f172a" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif">初始 Context 窗口</text>
+  <text x="275.0" y="257" text-anchor="middle" font-size="23" fill="#334155" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif">assemble：仅在迭代前</text>
+  <rect x="595" y="170" width="370" height="136" rx="22" fill="#ede9fe" stroke="#7c3aed" stroke-width="2" />
+  <text x="780.0" y="209" text-anchor="middle" font-size="27" font-weight="600" fill="#0f172a" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif">取消检查 / rebalance</text>
+  <text x="780.0" y="257" text-anchor="middle" font-size="23" fill="#334155" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif">每轮窗口预算 + 有界迭代</text>
+  <path d="M 1125 170 H 1445 L 1470 238.0 L 1445 306 H 1125 L 1100 238.0 Z" fill="#e0e7ff" stroke="#4f46e5" stroke-width="2" />
+  <text x="1285.0" y="209" text-anchor="middle" font-size="27" font-weight="600" fill="#0f172a" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif">Provider.complete</text>
+  <text x="1285.0" y="257" text-anchor="middle" font-size="21" fill="#334155" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif">kind=main；增量先发 model.delta</text>
+  <rect x="1100" y="478" width="370" height="136" rx="22" fill="#ecfdf5" stroke="#059669" stroke-width="2" />
+  <text x="1285.0" y="517" text-anchor="middle" font-size="27" font-weight="600" fill="#0f172a" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif">完整响应分类</text>
+  <text x="1285.0" y="565" text-anchor="middle" font-size="23" fill="#334155" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif">tools / 正文 / 空 / 截断</text>
+  <rect x="595" y="478" width="370" height="136" rx="22" fill="#fef3c7" stroke="#d97706" stroke-width="2" />
+  <text x="780.0" y="517" text-anchor="middle" font-size="27" font-weight="600" fill="#0f172a" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif">commit_model → 工具</text>
+  <text x="780.0" y="565" text-anchor="middle" font-size="23" fill="#334155" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif">先落库再执行；逐个提交结果</text>
+  <path d="M 90 503 Q 275.0 460 460 503 L 460 596 Q 275.0 639 90 596 Z" fill="#e2e8f0" stroke="#475569" stroke-width="2" />
+  <text x="275.0" y="517" text-anchor="middle" font-size="27" font-weight="600" fill="#0f172a" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif">当前窗口 / 迭代状态</text>
+  <text x="275.0" y="565" text-anchor="middle" font-size="23" fill="#334155" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif">批量返回后按序追加已提交观测</text>
+  <text x="527.5" y="194" font-size="23" fill="#047857" font-weight="600" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif" text-anchor="middle">D3</text>
+  <text x="527.5" y="221" font-size="21" fill="#047857" font-weight="400" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif" text-anchor="middle">初始窗口</text>
+  <text x="1032.5" y="194" font-size="23" fill="#0369a1" font-weight="600" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif" text-anchor="middle">C2</text>
+  <text x="1032.5" y="221" font-size="21" fill="#0369a1" font-weight="400" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif" text-anchor="middle">请求模型</text>
+  <text x="1305" y="390" font-size="23" fill="#047857" font-weight="600" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif" text-anchor="start">D1</text>
+  <text x="1305" y="417" font-size="21" fill="#047857" font-weight="400" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif" text-anchor="start">完整响应</text>
+  <text x="1065" y="492" font-size="23" fill="#0369a1" font-weight="600" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif" text-anchor="middle">C3</text>
+  <text x="1065" y="519" font-size="21" fill="#0369a1" font-weight="400" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif" text-anchor="middle">有工具</text>
+  <text x="527.5" y="492" font-size="23" fill="#047857" font-weight="600" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif" text-anchor="middle">D2</text>
+  <text x="527.5" y="519" font-size="21" fill="#047857" font-weight="400" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif" text-anchor="middle">已提交观测</text>
+  <text x="335" y="368" font-size="23" fill="#0369a1" font-weight="600" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif" text-anchor="start">C1 continue：下一轮预算检查</text>
+  <text x="1030" y="375" font-size="23" fill="#0369a1" font-weight="600" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif" text-anchor="start">C4</text>
+  <text x="1030" y="402" font-size="21" fill="#0369a1" font-weight="400" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif" text-anchor="start">空正文恢复</text>
+  <text x="770" y="132" font-size="22" fill="#0369a1" font-weight="500" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif" text-anchor="start">C5 overflow 且无 partial：可裁剪时重试 ≤2</text>
+  <text x="60" y="690" font-size="22" fill="#475569" font-weight="400" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif" text-anchor="start">正常正文：commit_model 后返回 completed / final_answer；输出截断：返回 interrupted / output_limit。</text>
+  <text x="60" y="738" font-size="22" fill="#475569" font-weight="400" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif" text-anchor="start">迭代耗尽：tools=None 收尾或本地 fallback，提交消息后仍返回 interrupted / iteration_limit。</text>
+  <text x="60" y="786" font-size="22" fill="#475569" font-weight="400" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif" text-anchor="start">空回复恢复有界；回环只回 rebalance，不重新 assemble；每个真实工具结果立即提交。</text>
+  <text x="60" y="834" font-size="22" fill="#475569" font-weight="400" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif" text-anchor="start">取消或不可恢复异常直接抛给 Runtime；终态由 Runtime 发布，Loop 不发 turn.finished。</text>
+</svg>

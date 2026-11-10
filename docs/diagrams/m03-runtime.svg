@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1560" height="760" viewBox="0 0 1560 760">
+<rect width="1560" height="760" fill="#f8fafc"/>
+<text x="60" y="64" font-size="32" font-weight="700" fill="#0f172a" font-family="Arial, PingFang SC, sans-serif">Runtime生命周期 · 新接受Turn主路径</text>
+<text x="60" y="110" font-size="23" fill="#475569" font-family="Arial, PingFang SC, sans-serif">C：控制调用，蓝色实线；D：数据与结果，绿色虚线；箭头指向接收方。</text>
+<rect x="90" y="170" width="370" height="136" rx="22" fill="#e0f2fe" stroke="#0284c7" stroke-width="2"/>
+<text x="275.0" y="209" text-anchor="middle" font-size="27" font-weight="600" fill="#0f172a" font-family="Arial, PingFang SC, sans-serif">Runtime.submit</text>
+<text x="275.0" y="257" text-anchor="middle" font-size="23" fill="#334155" font-family="Arial, PingFang SC, sans-serif">text + request_id</text>
+<rect x="595" y="170" width="370" height="136" rx="22" fill="#ede9fe" stroke="#7c3aed" stroke-width="2"/>
+<text x="780.0" y="209" text-anchor="middle" font-size="27" font-weight="600" fill="#0f172a" font-family="Arial, PingFang SC, sans-serif">fcntl工作区租约</text>
+<text x="780.0" y="257" text-anchor="middle" font-size="23" fill="#334155" font-family="Arial, PingFang SC, sans-serif">跨Kaki进程互斥</text>
+<path d="M 1125 170 H 1445 L 1470 238.0 L 1445 306 H 1125 L 1100 238.0 Z" fill="#e0e7ff" stroke="#4f46e5" stroke-width="2"/>
+<text x="1285.0" y="209" text-anchor="middle" font-size="27" font-weight="600" fill="#0f172a" font-family="Arial, PingFang SC, sans-serif">Store.accept_turn</text>
+<text x="1285.0" y="257" text-anchor="middle" font-size="23" fill="#334155" font-family="Arial, PingFang SC, sans-serif">用户消息+running同事务</text>
+<rect x="1100" y="478" width="370" height="136" rx="22" fill="#ecfdf5" stroke="#059669" stroke-width="2"/>
+<text x="1285.0" y="517" text-anchor="middle" font-size="27" font-weight="600" fill="#0f172a" font-family="Arial, PingFang SC, sans-serif">AgentLoop / /compact</text>
+<text x="1285.0" y="565" text-anchor="middle" font-size="23" fill="#334155" font-family="Arial, PingFang SC, sans-serif">before按策略；失败仅警告</text>
+<rect x="595" y="478" width="370" height="136" rx="22" fill="#fef3c7" stroke="#d97706" stroke-width="2"/>
+<text x="780.0" y="517" text-anchor="middle" font-size="27" font-weight="600" fill="#0f172a" font-family="Arial, PingFang SC, sans-serif">after / usage / context</text>
+<text x="780.0" y="565" text-anchor="middle" font-size="23" fill="#334155" font-family="Arial, PingFang SC, sans-serif">after同策略，尽力收尾</text>
+<path d="M 90 503 Q 275.0 460 460 503 L 460 596 Q 275.0 639 90 596 Z" fill="#e2e8f0" stroke="#475569" stroke-width="2"/>
+<text x="275.0" y="517" text-anchor="middle" font-size="27" font-weight="600" fill="#0f172a" font-family="Arial, PingFang SC, sans-serif">finish_turn + emit</text>
+<text x="275.0" y="565" text-anchor="middle" font-size="23" fill="#334155" font-family="Arial, PingFang SC, sans-serif">终态事实 + turn.finished</text>
+<polyline points="460,238.0 585,238.0" fill="none" stroke="#0369a1" stroke-width="3"/><polyline points="585,231.0 595,238.0 585,245.0" fill="none" stroke="#0369a1" stroke-width="3"/>
+<text x="527.5" y="210.0" text-anchor="middle" font-size="23" font-weight="600" fill="#0369a1" font-family="Arial, PingFang SC, sans-serif">C1</text>
+<text x="527.5" y="237.0" text-anchor="middle" font-size="21" fill="#0369a1" font-family="Arial, PingFang SC, sans-serif">创建Task</text>
+<polyline points="965,238.0 1090,238.0" fill="none" stroke="#0369a1" stroke-width="3"/><polyline points="1090,231.0 1100,238.0 1090,245.0" fill="none" stroke="#0369a1" stroke-width="3"/>
+<text x="1032.5" y="210.0" text-anchor="middle" font-size="23" font-weight="600" fill="#0369a1" font-family="Arial, PingFang SC, sans-serif">C2</text>
+<text x="1032.5" y="237.0" text-anchor="middle" font-size="21" fill="#0369a1" font-family="Arial, PingFang SC, sans-serif">接收请求</text>
+<polyline points="1285.0,306 1285.0,468" fill="none" stroke="#0369a1" stroke-width="3"/><polyline points="1278.0,468 1285.0,478 1292.0,468" fill="none" stroke="#0369a1" stroke-width="3"/>
+<text x="1240.0" y="392.0" text-anchor="middle" font-size="23" font-weight="600" fill="#0369a1" font-family="Arial, PingFang SC, sans-serif">C3</text>
+<text x="1240.0" y="419.0" text-anchor="middle" font-size="21" fill="#0369a1" font-family="Arial, PingFang SC, sans-serif">执行</text>
+<polyline points="1100,546.0 975,546.0" fill="none" stroke="#047857" stroke-width="3" stroke-dasharray="10 7"/><polyline points="975,539.0 965,546.0 975,553.0" fill="none" stroke="#047857" stroke-width="3"/>
+<text x="1032.5" y="516.0" text-anchor="middle" font-size="23" font-weight="600" fill="#047857" font-family="Arial, PingFang SC, sans-serif">D1</text>
+<text x="1032.5" y="543.0" text-anchor="middle" font-size="21" fill="#047857" font-family="Arial, PingFang SC, sans-serif">TurnResult</text>
+<polyline points="595,546.0 470,546.0" fill="none" stroke="#047857" stroke-width="3" stroke-dasharray="10 7"/><polyline points="470,539.0 460,546.0 470,553.0" fill="none" stroke="#047857" stroke-width="3"/>
+<text x="527.5" y="516.0" text-anchor="middle" font-size="23" font-weight="600" fill="#047857" font-family="Arial, PingFang SC, sans-serif">D2</text>
+<text x="527.5" y="543.0" text-anchor="middle" font-size="21" fill="#047857" font-family="Arial, PingFang SC, sans-serif">终态结果</text>
+<text x="60" y="713" font-size="23" fill="#475569" font-family="Arial, PingFang SC, sans-serif">快照：always 或 interactive 且交互模式时启用；never 跳过。失败记警告；终态提交后发布事件，最后释放租约。</text></svg>

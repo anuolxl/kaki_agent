@@ -1,0 +1,106 @@
+sequenceDiagram
+    participant UI as Textual UI
+    participant R as Runtime / Lease
+    participant S as Store / SQLite
+    participant K as Checkpoint
+    participant C as Context / Curator
+    participant L as AgentLoop
+    participant P as Responses Provider
+    participant T as ToolRegistry
+    participant B as BrowserMCP owner
+
+    Note over UI,B: Kaki 当前实现：一次新请求；C=控制调用（实线），D=数据或事件（虚线）
+    UI->>R: C01 Input.Submitted → submit(text)，create_task
+    R->>R: C02 获取 workspace lease
+    R->>S: C03 accept_turn 事务：user 消息 + running Turn
+    S-->>R: D01 turn_id / user_message_id，事务已提交
+    opt checkpoint 策略不是 never
+        R->>K: C04 capture(before)，事务外建立基线
+        K-->>R: D02 before_snapshot 或 warning
+    end
+    R->>L: C05 run(turn, user, history, recovery)
+    L->>C: C06 assemble(history, user, tools)
+    C->>C: C07 prefix 并行：memory + skills + rules
+    alt fast path 足够
+        C->>C: C08 确定性 build_plan，预算与配对校验
+    else 历史达到阈值或强制整理
+        C->>P: C09 complete(kind=curator)，仅私有 context tools
+        P-->>C: D03 计划 / 私有工具调用 / usage
+        C->>C: C10 执行私有工具并闭合预算，必要时确定性 fallback
+    end
+    Note over C,P: Curator 不调用编码 / Shell / 浏览器工具；Python 校验完整工具配对与最终窗口预算
+    C-->>L: D04 本轮 messages / TokenBudget / metadata
+    Note over S,P: Provider 每次尝试独立记录 model_calls / usage；与规范 messages 提交分离
+
+    loop iteration 小于 max_tool_iterations
+        L->>C: C11 rebalance(window, 当前工具定义)
+        C-->>L: D05 已校验窗口；必要时裁剪 / 归档
+        L->>P: C12 complete(kind=main, messages, tools, on_delta)
+        P-->>L: D06 SSE output_text.delta，尚非规范消息
+        L-->>UI: D07 经 Runtime.emit：model.delta(draft_id, text)
+        Note over UI,L: UI 每 60ms flush 并 upsert 草稿；model.committed 后用 message_id 替换同一气泡
+        P-->>L: D08 完整终事件后 normalize：text / tool_calls / native_items / usage
+        Note over L,P: 无终事件断流直接报错；incomplete 且含工具调用会被 Provider 拒绝，绝不执行截断参数
+        alt 完整工具调用
+            L->>S: C13 commit_model 同一事务：assistant + planned tool_runs
+            S-->>L: D09 规范 assistant / message_id / run_ids
+            L-->>UI: D10 model.committed，草稿转规范消息
+            L->>T: C14 execute_many(calls, on_start, on_complete)
+            Note over L,T: 连续安全 READ 分批最多 4 并行；写 / Shell / MCP 串行
+            loop 每个真实工具执行
+                T->>L: C15 on_start(call) 回调
+                L->>S: C16 mark_running 事务，先落库
+                S-->>L: D11 running 已持久化
+                L-->>T: D12 on_start 返回，才允许执行
+                alt 浏览器 MCP 工具
+                    T->>B: C17 入 owner 队列，await ClientSession.call_tool
+                    Note over T,B: stdio ClientSession → Playwright 子进程；独立 profile
+                    B-->>T: D13 真实 MCP 结果 / 图片附件 / 错误
+                else 内置或其他本地工具
+                    T->>T: C18 参数与路径校验后执行真实操作
+                end
+                T-->>L: D14 on_complete(call, 真实 ToolResult)
+                L->>S: C19 commit_tool 同一事务：结果状态 + tool message
+                S-->>L: D15 规范 observation 已提交
+                L-->>UI: D16 tool.finished(preview, artifacts, exit_code)
+            end
+            Note over S,T: 每个完成结果立即提交，不等待同批其他 READ；外部 I/O 不持有 SQLite 事务
+            T-->>L: D17 execute_many 返回，结果保持原调用顺序
+            L->>L: C20 按调用序追加 observations 到窗口，进入下一轮 rebalance
+        else 无工具且 completed 且正文可用，直接完成
+            L->>S: C21 commit_model：规范最终 assistant
+            S-->>L: D18 message_id / 最终正文
+            L-->>UI: D19 model.committed，替换草稿
+        else 截断或空回复
+            L->>L: C22 截断正文 → interrupted；空回复有界恢复，耗尽报错
+        end
+    end
+    opt 达到迭代上限
+        L->>P: C23 finalize：关闭工具，仅总结真实证据
+        P-->>L: D20 finalize 文本 / usage，或传播异常
+        Note over L,P: 失败时由 Loop 使用本地总结 fallback；状态仍为 interrupted
+        L->>S: C24 commit_model：收尾消息，状态仍为 interrupted
+    end
+    L-->>R: D21 TurnResult，或传播 CancelledError / 异常
+    alt 返回正常结果
+        R->>R: C25 保留 completed 或 interrupted 及 stop_reason
+    else 用户取消
+        R->>R: C26 形成 cancelled，已发生副作用不自动撤回
+    else 执行异常
+        R->>R: C27 形成 failed，保存错误类别与已有草稿
+    end
+    Note over UI,R: 取消可在任意 await 点触发：Runtime.cancel → active.cancel
+    opt checkpoint 策略不是 never
+        R->>K: C28 shield capture(after)
+        K-->>R: D22 after_snapshot 或 warning
+    end
+    R->>S: C29 usage(turn)，累计所有模型调用
+    S-->>R: D23 main / curator / finalize 分组 usage
+    R->>C: C30 after_turn，更新派生 working state
+    C->>S: C31 context_set：派生 working state
+    Note over R,C: after_turn 失败由 Runtime 记录 warning 并继续 finish_turn；规范事实仍保留
+    R->>S: C32 finish_turn 事务：终态 + pending 闭合
+    Note over R,L: 未返回结果的 running → unknown，未开始 planned → cancelled；补齐 tool observation，禁止假造成功
+    S-->>R: D24 终态与执行事实已持久化
+    R-->>UI: D25 唯一 turn.finished：状态 / usage / 快照 / 验证证据
+    R->>R: C33 finally 释放 lease、清空 active_turn
