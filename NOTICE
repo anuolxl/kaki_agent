@@ -1,0 +1,14 @@
+Kaki Agent
+Copyright 2026 Kaki contributors.
+
+Kaki is an independent Python implementation inspired by Pico Harness
+(https://gitee.com/htxoffical/pico-harness, reference revision
+d6c7a648fd7ee63e472c0d438f1c8299d9b8f871), licensed under Apache-2.0.
+
+The context selection, tool-call closure, Curator planning and emergency
+shrinking mechanisms were reimplemented with reference to Pico's architecture.
+Kaki's Textual UI, SQLite execution journal, Responses adapter and independent
+shadow-Git implementation are maintained in this repository.
+
+The full Apache License 2.0 is included in LICENSE. Third-party packages retain
+their respective licenses and are pinned in uv.lock.
