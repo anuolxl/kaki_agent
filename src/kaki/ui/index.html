@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kaki</title>
+  <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/app.css">
+  <script type="module" src="/assets/app.mjs"></script>
+</head>
+<body>
+  <aside id="sidebar">
+    <div class="brand"><img src="/assets/icon.svg" alt=""><span>Kaki</span><span class="local-badge">本机</span></div>
+    <button id="new-chat" class="new-chat"><span>＋</span> 新建会话 <kbd>⌘N</kbd></button>
+    <div class="section-label">工作区 <button id="open-project" class="icon-button" title="打开Git仓库" aria-label="打开Git仓库">＋</button></div>
+    <nav id="projects" aria-label="工作区列表"></nav>
+    <div class="section-label">会话 <button id="archive-toggle" class="text-button">查看归档</button></div>
+    <nav id="sessions" aria-label="会话列表"><div class="muted hint">打开一个仓库开始</div></nav>
+    <div class="sidebar-footer"><span id="connection"><i class="dot"></i> 正在连接</span><button id="quit-app" class="text-button" title="停止任务并退出整个App">退出 App</button></div>
+  </aside>
+  <main>
+    <header>
+      <div class="title-group"><span id="project-title">Kaki</span><span class="title-slash">/</span><h1 id="session-title">新会话</h1></div>
+      <div class="header-actions"><span id="model" class="model-badge"></span><button id="session-menu" class="icon-button" title="会话操作" aria-label="会话操作">•••</button></div>
+    </header>
+    <div id="error-banner" role="alert" hidden></div>
+    <div id="status-strip" class="status-strip idle" role="status" aria-live="polite"><span id="status-symbol" class="status-symbol">○</span><strong id="status-text">就绪</strong><span id="elapsed"></span><button id="jump-running" class="text-button" hidden>查看运行中的会话 →</button></div>
+    <section id="transcript" aria-label="对话内容">
+      <div id="welcome" class="welcome"><img src="/assets/icon.svg" alt=""><h2>想从哪里开始？</h2><p>选择一个本机仓库，和 Kaki 一起完成工作。</p><div class="suggestions"><button data-prompt="介绍一下你自己，说明你能执行哪些工具。只回答，不修改文件。">认识 Kaki <span>↗</span></button><button data-prompt="只读分析当前仓库的结构、主要模块和测试入口，不修改文件。">了解仓库 <span>↗</span></button><button data-prompt="只读 review 当前工作区的 diff 和新增文件，列出确认的问题与证据，不修改文件。">审查当前改动 <span>↗</span></button></div><button id="welcome-open" class="primary">打开仓库</button></div>
+      <div id="messages"></div>
+      <div id="live-message"></div>
+    </section>
+    <div id="warning-banner" hidden></div>
+    <div id="question" class="question" hidden><strong>需要你的回答</strong><p id="question-text"></p><div id="question-options"></div></div>
+    <form id="composer"><div class="composer-inner"><textarea id="prompt" rows="3" maxlength="100000" placeholder="给 Kaki 一个任务…" aria-label="任务输入"></textarea><div class="composer-bottom"><span id="composer-hint">Enter 发送 · Shift+Enter 换行</span><div><button id="stop-task" type="button" class="stop-button" hidden>■ 停止本轮</button><button id="send" type="submit" class="send-button" disabled aria-label="发送任务">↑</button></div></div></div><div id="result-note">任务运行时显示进度；结束后会明确标记完成、停止或失败。</div></form>
+  </main>
+  <dialog id="project-dialog"><form id="project-form"><h2>打开工作区</h2><p>输入本机单个 Git 仓库的路径。</p><input id="project-path" placeholder="/Users/…/your-repository" autocomplete="off" required><p id="project-error" class="dialog-error"></p><div class="dialog-actions"><button type="button" id="project-cancel">取消</button><button type="submit" class="primary">打开</button></div></form></dialog>
+  <dialog id="session-dialog"><form id="rename-form"><h2>会话管理</h2><label for="rename-title">会话名称</label><input id="rename-title" maxlength="80" required><div class="dialog-actions"><button type="button" id="session-cancel">取消</button><button type="submit" class="primary">保存名称</button></div><hr><button type="button" id="archive-session" class="archive-button">归档会话</button><p class="muted">归档可恢复，聊天记录和代码文件均会保留。</p></form></dialog>
+</body>
+</html>

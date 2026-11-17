@@ -12,6 +12,7 @@ from rich.cells import cell_len
 from rich.markdown import Markdown as RichMarkdown
 from textual import on, work
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal, VerticalScroll
 from textual.widgets import Button, Footer, Header, Input, RichLog, Static
 
@@ -50,13 +51,18 @@ class KakiApp(App):
     .assistant-message { background: #182638; border-left: thick #34d399; }
     #tools { height: 7; border-top: solid #29485e; background: #101e2e; padding: 0 2; }
     #status { height: 2; padding: 0 2; color: #7dd3fc; background: #142435; }
+    #task-phase { height: 3; content-align: center middle; text-style: bold; background: #142435; color: #9fb7cc; }
+    #task-phase.running { background: #4a3216; color: #ffd189; }
+    #task-phase.completed { background: #12412e; color: #9df0c1; }
+    #task-phase.failed { background: #521f29; color: #ffc2cc; }
+    #task-phase.cancelled, #task-phase.interrupted { background: #42341d; color: #edd09d; }
     #controls { height: 3; padding: 0 1; }
     #prompt { width: 1fr; }
     Button { min-width: 8; margin-left: 1; }
     Footer { background: #16354a; }
     """
     BINDINGS = [
-        ("ctrl+c", "cancel", "取消任务"),
+        Binding("ctrl+c", "interrupt", "退出程序", priority=True),
         ("ctrl+n", "new", "新会话"),
         ("ctrl+l", "sessions", "会话"),
         ("ctrl+q", "quit_safe", "退出"),
@@ -83,13 +89,14 @@ class KakiApp(App):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         yield Static("", id="workspace")
+        yield Static("正在初始化 Kaki…", id="task-phase")
         yield VerticalScroll(id="chat")
         yield RichLog(id="tools", wrap=True, markup=False, max_lines=300)
         yield Static("初始化Kaki…", id="status")
         with Horizontal(id="controls"):
             yield Input(placeholder="输入任务，Enter发送；/help 查看命令", id="prompt")
-            yield Button("发送", id="send", variant="primary")
-            yield Button("停止", id="stop", variant="warning")
+            yield Button("发送", id="send", variant="primary", disabled=True)
+            yield Button("停止本轮", id="stop", variant="warning", disabled=True)
         yield Footer()
 
     async def enqueue(self, event: Event):
@@ -106,8 +113,9 @@ class KakiApp(App):
             await self.runtime.initialize(self.resume)
             await self.load_history()
             self.header_update()
-            self.query_one("#status", Static).update("就绪 · Enter发送任务 · Ctrl+C取消 · /help查看命令")
+            self.query_one("#status", Static).update("就绪 · Enter发送 · 停止按钮仅停止本轮 · Ctrl+C退出程序")
             self.query_one("#prompt", Input).focus()
+            self.phase("idle", "○ 已就绪 · 可发送任务")
             self.ready_event.set()
         except Exception as exc:
             self.query_one("#status", Static).update("初始化失败：" + safe_error(exc))
@@ -157,6 +165,7 @@ class KakiApp(App):
                             f"Playwright MCP：{d.get('browser_tools', 0)}个浏览器工具"
                         )
                 elif event.type == "turn.started":
+                    self.phase("running", "◉ 本轮任务正在运行 · 请等待，或点击停止本轮")
                     await self.bubble(str(d["message_id"]), "user", d["text"])
                     self.query_one("#status", Static).update("任务运行中…")
                 elif event.type == "model.started":
@@ -194,6 +203,7 @@ class KakiApp(App):
                 elif event.type == "snapshot.warning":
                     self.query_one("#tools", RichLog).write("快照警告：" + d.get("error", "不可用"))
                 elif event.type == "question.requested":
+                    self.phase("running", "? 等待你的回答 · 本轮任务尚未结束", waiting=True)
                     self.question_id = d["question_id"]
                     await self.bubble(
                         "question-" + self.question_id,
@@ -209,11 +219,12 @@ class KakiApp(App):
                     u = d.get("usage", {})
                     v = d.get("verification", {})
                     labels = {
-                        "completed": "已结束",
-                        "interrupted": "已中断",
-                        "cancelled": "已取消",
-                        "failed": "失败",
+                        "completed": "✓ 本轮已完成，可以继续提问",
+                        "interrupted": "! 本轮未完成，可继续处理",
+                        "cancelled": "■ 本轮已停止，可以继续提问",
+                        "failed": "! 本轮失败，请查看错误",
                     }
+                    self.phase(d["status"], labels[d["status"]])
                     self.query_one("#status", Static).update(
                         f"{labels[d['status']]} · {d['stop_reason']} · 本轮累计{u.get('total_tokens', 0)} tokens / {u.get('calls', 0)}次模型请求 · 验证 {v.get('status', 'not_run')}"
                     )
@@ -238,6 +249,13 @@ class KakiApp(App):
                 await self.bubble(key, "assistant", text)
         if pending:
             self.query_one("#chat", VerticalScroll).scroll_end(animate=False)
+
+    def phase(self, state: str, text: str, *, waiting=False):
+        banner = self.query_one("#task-phase", Static)
+        banner.set_classes(state)
+        banner.update(text)
+        self.query_one("#send", Button).disabled = state == "running" and not waiting
+        self.query_one("#stop", Button).disabled = state != "running"
 
     @on(Input.Submitted, "#prompt")
     async def on_submit(self, event: Input.Submitted):
@@ -352,7 +370,7 @@ class KakiApp(App):
             await self.bubble(
                 "help-" + str(len(self.bubbles)),
                 "assistant",
-                "/new 新会话 · /sessions 会话列表 · /resume ID/last 恢复 · /compact 手动整理上下文 · /context 预算诊断 · /memory 项目记忆 · /undo [turn_id] 文件恢复预览 · /quit 退出。\nCtrl+C仅取消任务，不自动回滚文件。",
+                "/new 新会话 · /sessions 会话列表 · /resume ID/last 恢复 · /compact 手动整理上下文 · /context 预算诊断 · /memory 项目记忆 · /undo [turn_id] 文件恢复预览 · /quit 退出。\n停止按钮仅停止本轮；Ctrl+C退出整个程序。已发生的文件修改不会自动撤回。",
             )
         else:
             raise KakiError("未知命令，使用 /help")
@@ -378,11 +396,17 @@ class KakiApp(App):
         await self.runtime.cancel()
 
     async def action_quit_safe(self):
+        await self._quit(0)
+
+    async def action_interrupt(self):
+        await self._quit(130)
+
+    async def _quit(self, exit_code):
         if self._kaki_quitting:
             return
         self._kaki_quitting = True
         await self.runtime.close()
-        self.exit()
+        self.exit(return_code=exit_code)
 
     async def on_unmount(self):
         if self._consumer:

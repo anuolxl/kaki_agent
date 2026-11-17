@@ -11,14 +11,17 @@ import sys
 import termios
 import time
 
+import pytest
 
-def test_installed_cli_quits_from_real_pty(workspace, tmp_path):
+
+@pytest.mark.parametrize("exit_keys,expected", [(b"/quit\r", 0), (b"\x03", 130)])
+def test_installed_cli_quits_from_real_pty(workspace, tmp_path, exit_keys, expected):
     config = tmp_path / "config.json"
     config.write_text(json.dumps({"providers": {"openai": {"apiKey": "test-no-network"}}}))
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
     process = subprocess.Popen(
-        [sys.executable, "-m", "kaki", "--config", str(config), "-C", str(workspace.root)],
+        [sys.executable, "-m", "kaki", "--config", str(config), "-C", str(workspace.root), "tui"],
         stdin=slave,
         stdout=slave,
         stderr=slave,
@@ -38,11 +41,11 @@ def test_installed_cli_quits_from_real_pty(workspace, tmp_path):
                 except OSError:
                     break
             if not sent and "就绪".encode() in seen:
-                os.write(master, b"/quit\r")
+                os.write(master, exit_keys)
                 sent = True
         assert sent, "CLI did not reach ready state"
         process.wait(timeout=2)
-        assert process.returncode == 0
+        assert process.returncode == expected
     finally:
         if process.poll() is None:
             process.terminate()

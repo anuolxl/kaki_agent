@@ -1,6 +1,6 @@
 [project]
 name = "kaki-agent"
-version = "0.1.0"
+version = "0.2.0"
 description = "A local Python coding agent with durable sessions and bounded context"
 requires-python = ">=3.12,<3.13"
 license = "Apache-2.0"
@@ -8,6 +8,8 @@ dependencies = [
   "openai>=2.24,<3", "textual>=1,<9", "typer>=0.20,<1",
   "pydantic>=2.12,<3", "jsonschema>=4,<5", "tiktoken>=0.12,<1",
   "mcp>=1.28,<2", "pyyaml>=6,<7", "httpx>=0.28,<1", "pillow>=12,<13",
+  "aiohttp>=3.14,<4", "markdown-it-py>=3,<5",
+  "pywebview>=6.2,<7; sys_platform == 'darwin'",
 ]
 
 [project.optional-dependencies]
@@ -15,6 +17,7 @@ dev = ["pytest>=9,<10", "pytest-asyncio>=1,<2", "ruff>=0.14,<1"]
 
 [project.scripts]
 kaki-agent = "kaki.cli:main"
+kaki-app = "kaki.desktop:main"
 
 [build-system]
 requires = ["hatchling"]

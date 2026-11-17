@@ -22,7 +22,7 @@ async def test_quit_posts_exit_without_mutating_textual_closing(workspace, confi
 
 
 @pytest.mark.asyncio
-async def test_ctrl_c_cancels_with_input_focused(workspace, config):
+async def test_ctrl_c_exits_process_ui_with_input_focused(workspace, config):
     from kaki.types import ModelResponse
 
     provider = ScriptedProvider(ModelResponse(text="not reached"))
@@ -35,5 +35,27 @@ async def test_ctrl_c_cancels_with_input_focused(workspace, config):
         await pilot.press("enter")
         await asyncio.wait_for(provider.entered.wait(), 5)
         await pilot.press("ctrl+c")
-        await app.wait_for_turn(3)
+        await pilot.pause()
+        assert app._exit
+        assert app.return_code == 130
+        assert runtime.closed
+
+
+@pytest.mark.asyncio
+async def test_stop_button_cancels_turn_but_keeps_ui(workspace, config):
+    from kaki.types import ModelResponse
+
+    provider = ScriptedProvider(ModelResponse(text="not reached"))
+    provider.block = asyncio.Event()
+    runtime = Runtime(workspace, config, provider=provider)
+    app = KakiApp(runtime)
+    async with app.run_test() as pilot:
+        await asyncio.wait_for(app.ready_event.wait(), 5)
+        app.query_one("#prompt").value = "wait for model"
+        await pilot.press("enter")
+        await asyncio.wait_for(provider.entered.wait(), 5)
+        await pilot.click("#stop")
+        await app.wait_for_turn(5)
         assert app.last_result["status"] == "cancelled"
+        assert not app._exit and not runtime.closed
+        assert app.query_one("#task-phase").has_class("cancelled")

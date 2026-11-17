@@ -16,7 +16,8 @@ from kaki.types import TERMINAL, KakiError, Message, ModelResponse, ToolResult, 
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions(
- id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, title TEXT NOT NULL, created TEXT NOT NULL, updated TEXT NOT NULL);
+ id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, title TEXT NOT NULL, created TEXT NOT NULL, updated TEXT NOT NULL,
+ archived INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS turns(
  id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id), request_id TEXT UNIQUE NOT NULL,
  status TEXT NOT NULL, text TEXT NOT NULL, stop_reason TEXT, error TEXT, result_json TEXT,
@@ -77,6 +78,8 @@ class Store:
         await self.run("open")
 
     def _open(self):
+        if self.db is not None:
+            return
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         try:
             self.db = sqlite3.connect(self.path, timeout=10)
@@ -85,10 +88,20 @@ class Store:
             self.db.execute("PRAGMA journal_mode=WAL")
             self.db.execute("PRAGMA synchronous=FULL")
             version = self.db.execute("PRAGMA user_version").fetchone()[0]
-            if version > 1:
+            if version > 2:
                 raise KakiError("状态数据库版本比当前Kaki新，请不要降级覆盖")
+            # Preserve a SQLite-consistent copy, including WAL data, before adding App metadata.
+            if version == 1:
+                backup = self.path.with_name(self.path.name + ".v1-" + uid()[:12] + ".backup")
+                descriptor = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                os.close(descriptor)
+                with sqlite3.connect(backup) as connection:
+                    self.db.backup(connection)
             self.db.executescript(SCHEMA)
-            self.db.execute("PRAGMA user_version=1")
+            columns = {row[1] for row in self.db.execute("PRAGMA table_info(sessions)")}
+            if "archived" not in columns:
+                self.db.execute("ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
+            self.db.execute("PRAGMA user_version=2")
             self.db.commit()
             os.chmod(self.path, 0o600)
         except sqlite3.DatabaseError as exc:
@@ -115,17 +128,50 @@ class Store:
         identity = uid("s_")
         with self.db:
             self.db.execute(
-                "INSERT INTO sessions VALUES(?,?,?,?,?)", (identity, self.workspace_id, title, now(), now())
+                "INSERT INTO sessions(id,workspace_id,title,created,updated) VALUES(?,?,?,?,?)",
+                (identity, self.workspace_id, title, now(), now()),
             )
         return identity
 
-    def _sessions(self) -> list[dict]:
+    def _sessions(self, archived: bool = False) -> list[dict]:
         return [
             dict(x)
             for x in self.db.execute(
-                "SELECT * FROM sessions WHERE workspace_id=? ORDER BY updated DESC", (self.workspace_id,)
+                "SELECT * FROM sessions WHERE workspace_id=? AND archived=? ORDER BY updated DESC",
+                (self.workspace_id, int(archived)),
             )
         ]
+
+    def _session_summaries(self, archived: bool = False) -> list[dict]:
+        return [
+            dict(row)
+            for row in self.db.execute(
+                "SELECT s.*, (SELECT status FROM turns WHERE session_id=s.id ORDER BY created DESC LIMIT 1) AS status, "
+                "(SELECT text FROM turns WHERE session_id=s.id ORDER BY created DESC LIMIT 1) AS preview "
+                "FROM sessions s WHERE workspace_id=? AND archived=? ORDER BY updated DESC",
+                (self.workspace_id, int(archived)),
+            )
+        ]
+
+    def _rename_session(self, session: str, title: str):
+        self._session(session)
+        title = title.strip()
+        if not title or len(title) > 80 or any(ord(char) < 32 for char in title):
+            raise KakiError("会话标题需要1–80个可见字符")
+        with self.db:
+            self.db.execute("UPDATE sessions SET title=?,updated=? WHERE id=?", (title, now(), session))
+
+    def _archive_session(self, session: str, archived: bool):
+        self._session(session)
+        if self.db.execute(
+            "SELECT 1 FROM turns WHERE session_id=? AND status IN ('queued','running','waiting_user')",
+            (session,),
+        ).fetchone():
+            raise KakiError("任务仍在运行，结束或停止后才能归档")
+        with self.db:
+            self.db.execute(
+                "UPDATE sessions SET archived=?,updated=? WHERE id=?", (int(archived), now(), session)
+            )
 
     def _session(self, identity: str) -> dict:
         row = self.db.execute(

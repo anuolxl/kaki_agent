@@ -45,6 +45,7 @@ class Runtime:
         self.closed = False
         self.recovery_plan = {}
         self.browser_warning = None
+        self._browser_attempted = False
 
     async def emit(self, kind: str, turn: str = "", data: dict | None = None):
         event = Event(kind, turn, data or {})
@@ -63,7 +64,7 @@ class Runtime:
             "detail": "auto",
         }
 
-    async def initialize(self, resume: str | None = None):
+    async def initialize(self, resume: str | None = None, *, connect_browser: bool = True):
         if self.initialized:
             return
         await self.store.open()
@@ -108,12 +109,8 @@ class Runtime:
         else:
             self.session_id = await self.store.run("new_session")
         self.context.last_metadata = (await self.store.run("context_get", self.session_id))["plan"]
-        if self.browser.enabled:
-            await self.emit("runtime.status", data={"text": "正在连接Playwright MCP…"})
-            try:
-                await self.tools.connect_browser()
-            except Exception as exc:
-                self.browser_warning = safe_error(exc)
+        if connect_browser:
+            await self.ensure_browser()
         self.initialized = True
         await self.emit(
             "runtime.ready",
@@ -124,6 +121,21 @@ class Runtime:
                 "recovery": self.recovery_plan,
             },
         )
+
+    async def ensure_browser(self):
+        """App history opens immediately; MCP initialization is deferred until task execution."""
+        if not self.browser.enabled or self._browser_attempted:
+            return
+        self._browser_attempted = True
+        await self.emit("runtime.status", data={"text": "正在连接Playwright MCP…"})
+        try:
+            await self.tools.connect_browser()
+        except asyncio.CancelledError:
+            self._browser_attempted = False
+            raise
+        except Exception as exc:
+            self.browser_warning = safe_error(exc)
+            await self.emit("runtime.warning", data={"text": "浏览器未连接：" + self.browser_warning})
 
     async def new_session(self, title="新会话"):
         if self.active and not self.active.done():
@@ -261,7 +273,7 @@ class Runtime:
                     if self.question and not self.question["future"].done():
                         self.question["future"].cancel()
                     self.question = None
-                    if self.snapshots_enabled:
+                    if self.snapshots_enabled and not self.closed:
                         try:
                             snapshot = await asyncio.shield(self.checkpoint.capture(turn, "after"))
                             after = snapshot["id"]
@@ -270,6 +282,8 @@ class Runtime:
                                 await self.emit("snapshot.warning", turn, snapshot)
                         except Exception as exc:
                             warnings.append("结束快照失败：" + safe_error(exc))
+                    elif self.snapshots_enabled:
+                        warnings.append("程序退出，未等待结束快照；会话与已确定执行结果仍保留")
                     result.before_snapshot = before
                     result.after_snapshot = after
                     result.usage = await self.store.run("usage", turn)
