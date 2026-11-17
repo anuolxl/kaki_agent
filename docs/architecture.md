@@ -2,6 +2,8 @@
 
 默认入口现在是本机 App。macOS 使用 pywebview 的 Cocoa/WKWebView 原生窗口，其他系统可用浏览器模式。Python 内核、Right Code 配置、上下文规划、工具与持久化沿用 v0.1。入口和使用见 [app-guide.md](app-guide.md)，界面接口契约见 [module-spec/app.md](module-spec/app.md)，内核字段见 [module-spec/core.md](module-spec/core.md)。[v0.1 技术手册](kaki-agent-guide.md)保留当时的源代码摘录与图示。
 
+按实际调用顺序逐段阅读代码，见 [源码阅读指南](source-reading-guide.md)。其中说明 SQLite 为同进程数据库库、AppServer 为本机界面传输层，并用带控制流/数据流标注的时序图展开启动、模型工具循环与任务收尾。
+
 ```mermaid
 flowchart TB
     User[用户] -->|控制：打开项目、发送、停止、退出| Window[macOS WebKit 窗口 / 浏览器]

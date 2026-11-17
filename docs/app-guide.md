@@ -2,6 +2,8 @@
 
 Kaki 现在默认打开一个简易的本机 App。左侧选择工作区和会话，右侧对话；底部多行输入，顶部持续显示本轮状态。已有 Python Agent 内核与 Right Code 配置继续使用。当前不是完整 Codex App 的功能复刻，暂未提供代码差异编辑器和图形化文件恢复审批。
 
+学习 SQLite、源码阅读顺序和请求从启动到结束的详细过程，见 [源码阅读指南](source-reading-guide.md)。执行日志、数据库表和MCP stderr的查看方法见该指南第13节。
+
 ## 1. 安装和启动
 
 macOS 需要 Python3.12、uv、Git；编码搜索需要 ripgrep，浏览器 MCP 需要 Node/npm 和 Chrome。安装器生成用户级启动器，依赖仍由 uv 管理，无需管理员权限。
