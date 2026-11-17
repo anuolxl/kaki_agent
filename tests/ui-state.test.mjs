@@ -1,0 +1,12 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {statusFor, messageGroups} from '../src/kaki/ui/state.mjs';
+const base=()=>({session:{id:'one'},turns:[{id:'t1',status:'running'}],messages:[],live:{session_id:'one',busy:true,phase:'model'}});
+test('committed answer stays busy while finishing',()=>{const d=base();d.live.phase='finishing';d.messages.push({role:'assistant',text:'visible'});assert.equal(statusFor(d,true).phase,'finishing');assert.equal(statusFor(d,true).canSend,false);});
+test('terminal task enables next turn',()=>{const d=base();d.live={session_id:'one',busy:false,phase:'completed',result:{status:'completed'}};d.turns[0].status='completed';assert.equal(statusFor(d,true).canSend,true);assert.equal(statusFor(d,true).canStop,false);});
+test('question permits answer while keeping stop control',()=>{const d=base();d.live.phase='waiting_user';d.live.question={id:'q'};const s=statusFor(d,true);assert.equal(s.busy,true);assert.equal(s.canSend,true);assert.equal(s.canStop,true);});
+test('another active session blocks competing writes',()=>{const d=base();d.session.id='two';d.turns=[];const s=statusFor(d,true);assert.equal(s.otherRunning,true);assert.equal(s.canSend,false);assert.equal(s.canStop,false);});
+test('disconnect never means completed',()=>{const d=base();d.turns[0].status='completed';const s=statusFor(d,false);assert.equal(s.phase,'unknown');assert.equal(s.canSend,false);});
+test('archived session is read only',()=>{const d=base();d.live.busy=false;d.session.archived=1;assert.equal(statusFor(d,true).canSend,false);});
+test('messages retain turn boundaries',()=>{const d=base();d.turns.push({id:'t2'});d.messages=[{id:1,turn_id:'t1'},{id:2,turn_id:'t2'}];assert.deepEqual(messageGroups(d).map(g=>g.messages.map(m=>m.id)),[[1],[2]]);});
+test('shutdown remains in progress until the connection closes',()=>{const d=base();const s=statusFor(d,true,true,true);assert.equal(s.phase,'closing');assert.equal(s.busy,true);assert.equal(s.canSend,false);assert.equal(statusFor(d,false,true,false).phase,'closed');});

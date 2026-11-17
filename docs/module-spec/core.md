@@ -1,12 +1,12 @@
-# Kaki v0.1 核心契约
+# Kaki v0.2 核心契约
 
-此文档对应当前实现。完整架构与操作指南见 [../kaki-agent-guide.md](../kaki-agent-guide.md)。运行语言 Python 3.12，单 Git 工作区，单活跃 Turn；边界检查不是 OS 沙箱。
+此文档对应当前实现。桌面层契约见 [app.md](app.md)，当前操作指南见 [../app-guide.md](../app-guide.md)，原有内核详解见 [../kaki-agent-guide.md](../kaki-agent-guide.md)。运行语言 Python 3.12，每个 Git 工作区最多单活跃 Turn；边界检查不是 OS 沙箱。
 
 ## 配置和兼容
 
 Config 接受 camelCase/snake_case；优先级 CLI > 非空 KAKI_ 双下划线层级环境变量 > JSON > 默认值。未知字段拒绝，extraHeaders/env 的键保留大小写。apiKey 为 SecretStr，只在本机配置中显式写出，保存模式0600。apiBase/Key/model 来自 ~/.kaki/config.json 或显式覆盖，不依赖在 Shell profile 中保存 Key。
 
-默认模型 openai/gpt-5.6-sol，maxTokens=8192，contextWindowTokens=65536，maxToolIterations=40；maxTokens 小于窗口且留输入。窗口值是手动 cap，不是服务商元信息。memory.backend=local/null；MCP 仅 browser；checkpoint.policy=interactive/always/never，interactive 仅 TUI 自动快照，always 含 headless，never 禁用。
+默认模型 openai/gpt-5.6-sol，maxTokens=8192，contextWindowTokens=65536，maxToolIterations=40；maxTokens 小于窗口且留输入。窗口值是手动 cap，不是服务商元信息。memory.backend=local/null；MCP 仅 browser；checkpoint.policy=interactive/always/never，interactive 包括 App 和 TUI 自动快照，always 含 headless，never 禁用。
 
 ## 类型字段：语义、默认与构造点
 
@@ -23,13 +23,13 @@ Config 接受 camelCase/snake_case；优先级 CLI > 非空 KAKI_ 双下划线�
 | ContextPlan | include_message_ids/archive_refs/drop_message_ids/memory_sections=[]，working_state_injection/notes='' | Curator私有build或确定性策略构造；ID必须存在；不能拆工具组或丢保护组 |
 | AssembledContext | messages/budget/estimated_tokens必填，metadata={} | 最后预算门输出；metadata包含path/validation/included_ids/plan/skills/memory/archive来源 |
 
-新增字段需同步序列化、Store、Provider、窗口估算、UI、恢复与本表。SQLite schema=1：拒绝更高版本，不静默重置；v0.1尚未承诺对未来版本自动迁移。规范完整原文始终在messages表，窗口选择/摘要均为派生数据。
+新增字段需同步序列化、Store、Provider、窗口估算、UI、恢复与本表。SQLite schema=2：v1 自动迁移前通过 SQLite backup API 生成包含 WAL 的一致备份 `kaki.sqlite3.v1-<随机ID>.backup`（0600），再增加 sessions.archived 并提交版本2；拒绝更高版本，不静默重置。迁移后不要用旧版本进程写同一数据库。规范完整原文始终在messages表，窗口选择/摘要均为派生数据。
 
 ## 持久化表和事务边界
 
 Store.run(operation,*args) 进入唯一ThreadPoolExecutor(1)持有的SQLite连接。WAL、synchronous=FULL、foreign_keys=ON。外部 I/O 不放在事务里。
 
-- sessions(id,workspace_id,title,created,updated)：项目内会话。
+- sessions(id,workspace_id,title,created,updated,archived)：项目内会话；archived INTEGER NOT NULL DEFAULT 0，0=正常/1=软归档，不删除消息、工具结果或快照。Store._new_session 显式写列；_rename_session 标题去首尾空白、1–80字符、拒绝控制字符；_archive_session 拒绝活跃 Turn。AppController 另拦截尚未创建 Turn 的准备阶段。_sessions/_session_summaries 默认仅正常会话，archived=True 仅归档会话。
 - turns(id,session_id,request_id UNIQUE,status,text,stop_reason,error,result_json,before_snapshot,after_snapshot,created,ended)：请求幂等与终态。accept_turn 同事务保存用户Message；相同request_id不同内容拒绝；重复终态请求返回旧结果，不再执行。
 - messages(id,session_id,turn_id,seq UNIQUE per session,role,content,payload,created)：稳定递增ID、原始领域payload。
 - tool_runs(id,turn_id,tool_call_id,name,arguments,state,result_json,started,ended)：commit_model 同事务保存assistant原生项与全部planned；mark_running在执行前提交；commit_tool同事务保存结果与tool消息。已完成结果不会被未完成同批读操作覆盖。
@@ -48,7 +48,7 @@ Turn活跃态queued/running/waiting_user；终态completed/interrupted/cancelled
 
 ## 模块接口
 
-- Runtime.initialize(resume)/submit(text,request_id)->Task/run(...)->TurnResult/answer(question_id,text)/cancel/close。负责租约、before/after和唯一终态发布；interactive标记控制快照策略。
+- Runtime.initialize(resume,connect_browser=True)/ensure_browser/submit(text,request_id)->Task/run(...)->TurnResult/answer(question_id,text)/cancel/close。负责租约、before/after和唯一终态发布；interactive标记控制快照策略。App 用 connect_browser=False 打开历史，首次发送才连接 MCP，普通 TUI 保持原行为。close 先标记 closed 再取消，不在进程退出时启动新的 after 快照，记录明确警告；普通停止本轮仍执行正常收尾。恢复机制仍处理强制退出留下的 UNKNOWN。
 - RightCodeProvider.complete(messages,tools,model,max_tokens,turn_id,kind,on_delta,tool_choice)->ModelResponse；close。delta仅展示，完整终事件后才允许工具执行。
 - ContextEngine.assemble(session,history,user,tools,force,recovery)->AssembledContext；rebalance(session,window,tools)；after_turn。所有历史选择经闭包/预算门。
 - ToolRegistry.execute_many(calls,ctx,on_start,on_complete)->按输入序ToolResult；safe READ最多4，其他串行；每个完成即调用on_complete落库。Schema/路径/超时失败返回failed观测；Cancel向上传播。
@@ -66,3 +66,5 @@ tiktoken o200k_base，加载失败用UTF8字节/3保守回退；估算包含完�
 ## 验证与兼容样例
 
 自动化覆盖配置别名/优先级/密钥诊断、路径逃逸、执行租约、协议配对、崩溃UNKNOWN、幂等与终态、真实文件/Shell、取消恢复、ask_user、迭代上限、快慢路径/超时/无效plan/固定开销溢出、原文归档、活动Turn重平衡、本地Skill/中文召回、记忆版本、shadow Git原始字节/冲突/用户index不变、Responses SSE终事件与TUI流式归并。真实模型/TUI验收结果见技术手册，CI未执行时不声称CI通过。
+
+v0.2 另覆盖 v1→v2 备份迁移、会话归档/恢复/重命名、收尾阶段不提前报完成、等待用户作用域、关闭跳过新快照、HTTP/WS 鉴权、慢客户端 resync、真实子进程 SIGINT 130/单实例、PTY `/quit` 和 Ctrl+C 退出，以及 Node 状态决策测试。

@@ -21,7 +21,7 @@ from kaki.workspace import Workspace
 app = typer.Typer(
     invoke_without_command=True,
     no_args_is_help=False,
-    help="Kaki 本地编码Agent：单进程Python TUI、持久会话与有界上下文。",
+    help="Kaki 本机编码Agent：默认打开会话App；tui保留终端界面。",
 )
 console = Console()
 
@@ -41,12 +41,45 @@ def entry(
     ctx.obj = {"cwd": cwd, "config": config, "resume": resume, "model": model}
     if ctx.invoked_subcommand is not None:
         return
-    options = load_config(config, model=model)
+    from kaki.desktop import launch
+
+    raise typer.Exit(launch(cwd, config, resume, model))
+
+
+@app.command("app")
+def desktop_app(
+    ctx: typer.Context,
+    cwd: Path | None = typer.Option(None, "--cwd", "-C"),
+    browser: bool = typer.Option(False, "--browser", help="使用浏览器窗口"),
+    no_open: bool = typer.Option(False, "--no-open", help="仅启动本机服务"),
+    port: int = typer.Option(0, "--port", min=0, max=65535),
+):
+    from kaki.desktop import launch
+
+    raise typer.Exit(
+        launch(
+            cwd or ctx.obj["cwd"],
+            ctx.obj["config"],
+            ctx.obj["resume"],
+            ctx.obj["model"],
+            browser=browser,
+            no_open=no_open,
+            port=port,
+        )
+    )
+
+
+@app.command("tui")
+def terminal_ui(ctx: typer.Context):
+    """终端界面：Ctrl+C退出整个进程，停止按钮仅停止本轮任务。"""
+    options = load_config(ctx.obj["config"], model=ctx.obj["model"])
     options.validate_credentials()
-    workspace = Workspace.resolve(cwd, options)
+    workspace = Workspace.resolve(ctx.obj["cwd"], options)
     from kaki.tui import KakiApp
 
-    KakiApp(Runtime(workspace, options), resume=resume).run()
+    ui = KakiApp(Runtime(workspace, options), resume=ctx.obj["resume"])
+    ui.run()
+    raise typer.Exit(ui.return_code)
 
 
 @app.command()

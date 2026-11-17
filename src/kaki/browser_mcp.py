@@ -11,6 +11,7 @@ from datetime import timedelta
 from mcp import ClientSession, StdioServerParameters, types
 from mcp.client.stdio import stdio_client
 
+from kaki import __version__
 from kaki.config import Config, safe_error
 from kaki.types import KakiError, ToolResult
 from kaki.workspace import Workspace
@@ -64,7 +65,7 @@ class BrowserMcp:
                     write,
                     read_timeout_seconds=timedelta(seconds=opt.tool_timeout),
                     list_roots_callback=roots,
-                    client_info=types.Implementation(name="kaki-agent", version="0.1.0"),
+                    client_info=types.Implementation(name="kaki-agent", version=__version__),
                 ) as session:
                     await session.initialize()
                     listing = await session.list_tools()

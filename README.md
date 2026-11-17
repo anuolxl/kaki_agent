@@ -1,8 +1,8 @@
 # Kaki Agent
 
-Python 3.12 本地编码 Agent。Textual TUI 与 Runtime 同进程，通过 Right Code 的 OpenAI Responses 兼容接口调用模型；支持单 Git 工作区、文件与 Shell 工具、Playwright MCP、本地 Skills、完整会话持久化、上下文规划/归档、显式项目记忆和独立 Git 快照。
+Python 3.12 本地编码 Agent。默认打开简易桌面 App：工作区与会话侧栏、多轮对话、流式 Markdown、明确的运行/收尾/完成/停止/失败状态。通过 Right Code 的 OpenAI Responses 兼容接口调用模型；保留文件与 Shell 工具、Playwright MCP、本地 Skills、会话持久化、上下文规划/归档、项目记忆和独立 Git 快照。Textual TUI 仍可显式启动。
 
-详细原理与操作手册：[docs/kaki-agent-guide.md](docs/kaki-agent-guide.md)。数据契约：[docs/module-spec/core.md](docs/module-spec/core.md)。
+当前操作手册与截图：[docs/app-guide.md](docs/app-guide.md)。架构：[docs/architecture.md](docs/architecture.md)。数据与接口契约：[core.md](docs/module-spec/core.md)、[app.md](docs/module-spec/app.md)。[v0.1 内核详解](docs/kaki-agent-guide.md)保留历史源代码摘录。
 
 ## 安装与本机部署
 
@@ -12,7 +12,9 @@ Python 3.12 本地编码 Agent。Textual TUI 与 Runtime 同进程，通过 Righ
 cd /Users/bytedance/github/kaki_agent
 uv python install 3.12
 uv sync --python 3.12 --extra dev --locked
-uv tool install --editable /Users/bytedance/github/kaki_agent --python 3.12
+uv tool install --editable /Users/bytedance/github/kaki_agent --python 3.12 --force
+uv run python scripts/install_macos_app.py
+open "$HOME/Applications/Kaki.app"
 ```
 
 将 `~/.local/bin` 加入当前 Shell 的 PATH；本机已有此设置。不要把凭据写入仓库。
@@ -37,7 +39,18 @@ kaki-agent -C /path/to/single-git-repo --resume last
 uv run --project /Users/bytedance/github/kaki_agent kaki-agent -C /path/to/single-git-repo
 ```
 
-`-C/--cwd` 指向目标工作区，uv 的项目路径指向 Kaki 自身；二者职责不同。不要在目标项目中依赖 `uv run pico` 或系统同名程序。
+`-C/--cwd` 指向目标工作区，uv 的项目路径指向 Kaki 自身；二者职责不同。macOS 默认打开原生 WebKit 窗口，也可从 Finder 或 Dock 打开 `~/Applications/Kaki.app` 再选择仓库。再次启动会复用窗口。不要在目标项目中依赖系统同名程序。
+
+```bash
+# 等价桌面入口
+kaki-app -C /path/to/repo
+# 浏览器模式；关标签不会退出后台，请用界面“退出 App”或终端 Ctrl+C
+kaki-agent -C /path/to/repo app --browser
+# 保留的终端界面
+kaki-agent -C /path/to/repo tui
+```
+
+运行时显示橙色进度、计时和“停止本轮”；正文结束但快照/持久化仍在执行时显示“正在收尾”；Task 返回后显示绿色“本轮已完成”。失败和停止分别标红/灰，断线显示“状态待确认”。停止本轮保留 App；Ctrl+C、退出按钮或关闭原生窗口退出整个应用进程。Cmd+C 仍用于复制。
 
 ```bash
 # 参数 -C/--config/--resume 放在子命令之前
@@ -51,7 +64,7 @@ kaki-agent -C /path/to/repo run -m '介绍你自己，不修改文件'
 
 ## TUI
 
-Enter 发送；Ctrl+C 取消当前任务；Ctrl+Q 或 `/quit` 退出；Ctrl+N 新建会话。
+使用 `kaki-agent -C /path/to/repo tui`。Enter 发送；“停止”按钮仅停止本轮；Ctrl+C 退出整个进程（退出码130）；Ctrl+Q 或 `/quit` 正常退出；Ctrl+N 新建会话。
 
 | 命令 | 功能 |
 |---|---|
@@ -88,7 +101,7 @@ export KAKI_CONTEXT__CURATOR_TIMEOUT_SECONDS=60
 kaki-agent --config /path/to/config.json -C /path/to/repo
 ```
 
-默认 checkpoint=interactive 仅 TUI 自动取快照；headless `run` 如需快照设置 policy=always。never 关闭快照。`memory.backend=null` 可关闭项目记忆。
+默认 checkpoint=interactive 在 App/TUI 自动取快照；headless `run` 如需快照设置 policy=always。never 关闭快照。`memory.backend=null` 可关闭项目记忆。退出进程时不再启动新的 after 快照，已确定结果仍落盘；正常停止本轮仍做收尾。
 
 ## 本地 Skills
 
@@ -120,6 +133,8 @@ uv run python -m compileall -q src
 uv run ruff check .
 uv run ruff format --check .
 uv run pytest -q
+node --test tests/ui-state.test.mjs
+node --check src/kaki/ui/app.mjs
 ```
 
 真实 TUI 验证脚本使用真实模型和浏览器，会产生 API 费用。先在新临时目录创建 fixture；脚本拒绝修改业务仓库。图片为实际 Textual 原生界面导出，CJK 仅修复导出字体宽度，不是效果图。
