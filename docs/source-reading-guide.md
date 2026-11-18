@@ -1,47 +1,491 @@
 # SQLite、源码阅读与一次请求全链路（Kaki v0.2）
 
-本文按当前桌面 App 的实际执行顺序读代码，补充原介绍文档第13章。源码基线为 [`686301b`](https://github.com/anuolxl/kaki_agent/tree/686301bec20ebda7e93b92d41760b29cea40ff00)，其内容对应已合入的 v0.2。代码链接固定到该提交，避免后续行号变化；安装操作见 [App指南](app-guide.md)，字段完整定义见 [核心契约](module-spec/core.md)和 [App契约](module-spec/app.md)。
+本章改为沿真实调用顺序连续阅读，不按模块先讲完一遍再回头拼接。先从默认桌面App的命令入口走到后台待命，再追踪第一个新任务直到收尾。整条主线结束后，单独从头走TUI入口。每步都交代调用者、输入、实际代码、产生的状态，以及返回后接着执行哪里。
 
-每段“源码节选”直接提取仓库真实行，新增的 `# 阅读：` / `// 阅读：` 只是本文注释，没有修改运行源码。片段可能位于函数内部，应沿源码链接查看其完整上下文。示意任务和调用数据会明确标注，不冒充本次运行日志。
+源码固定到 [`1ff0952`](https://github.com/anuolxl/kaki_agent/tree/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c)。节选直接来自该提交；`# 阅读：` / `// 阅读：`是本文注释，不是新增运行代码。正文中的教学任务仅帮助串起分支，不冒充本次实际模型调用记录。
 
-## 1. SQLite 是什么，是否需要启动服务
+主线假设：macOS、首次启动本KAKI_HOME中的App实例、显式指定一个有效单Git工作区、已有可读取配置。恢复旧会话也属于这条路径，所以“首个新任务”不一定是数据库里的第一轮对话。遇到已有实例、未指定项目、MCP失败等情况，在主线结束后的边界表说明，避免中途打断顺序。
 
-SQLite 是嵌入式关系型数据库引擎。在 Kaki 中，Python 标准库 `sqlite3` 调用本进程里的 SQLite 库，直接读写磁盘文件，不连接独立数据库服务器。因此不用启动 SQLite 守护进程、配置数据库端口或数据库服务账户。`sqlite3` 命令行只是临时打开文件执行查询的客户端工具。[SQLite官方说明](https://sqlite.org/serverless.html)、[Python3.12 sqlite3文档](https://docs.python.org/3.12/library/sqlite3.html)。
+## 01. 在终端执行命令，先进入安装好的Python入口
 
-### 1.1 分清四条不同链路
-
-| 链路 | 实际方式 | 对端 / 存储 |
-|---|---|---|
-| 窗口 ↔ Kaki后台 | 本机 HTTP 命令 + WebSocket 状态推送 | 同一 Kaki 应用的 AppServer，127.0.0.1随机端口 |
-| Store ↔ SQLite | Python函数调用、文件I/O | 项目状态目录的 kaki.sqlite3，不是网络服务 |
-| Provider ↔ 大模型 | HTTPS Responses + SSE | 配置的 Right Code 兼容接口 |
-| BrowserMcp ↔ 浏览器工具服务 | 子进程 stdio JSON-RPC | Playwright MCP，再驱动独立浏览器会话 |
-
-Kaki 的 **AppServer 是本机界面传输层**，不是数据库服务器。Store 是 Python 类；`store.run("accept_turn", ...)` 中的字符串用于选择本地 `_accept_turn` 方法，不是发往微服务的 RPC 方法名。MCP owner task 是后台协程，不是另一个推理 Agent。
-
-图1按同一请求的访问次序展示边界。`C` 表示控制调用，`D` 表示返回或传递的数据；同步文件操作也有明确方向。
-
-```mermaid
-sequenceDiagram
-    participant UI as App窗口
-    participant B as Python后台
-    participant W as Store专用线程
-    participant S as SQLite库
-    participant F as 本机文件
-    Note over B,S: 属于同一Kaki进程；Store线程不另起服务
-    UI->>B: C1 HTTP提交text和request_id
-    B->>W: C2 await store.run(operation)
-    W->>S: C3 sqlite3.execute SQL和参数
-    S->>F: D1 写入数据库与WAL事务数据
-    F-->>S: D2 文件I/O结果
-    S-->>W: D3 查询行或提交结果
-    W-->>B: D4 Python对象返回await调用者
-    B-->>UI: D5 HTTP历史或WebSocket状态
+```bash
+kaki-agent -C /path/to/single-git-repo
 ```
 
-### 1.2 源码中怎么证明没有数据库服务
+这里的`-C`指定要工作的代码仓库。Kaki自己的Python依赖来自此前uv安装的工具环境，不要求目标仓库也是Python项目。安装脚本的入口映射是：
 
-源码节选：[ src/kaki/store.py:64–89 ](https://github.com/anuolxl/kaki_agent/blob/686301bec20ebda7e93b92d41760b29cea40ff00/src/kaki/store.py#L64-L89)。
+源码节选：[pyproject.toml:18–20](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/pyproject.toml#L18-L20)。
+
+```toml
+[project.scripts]
+kaki-agent = "kaki.cli:main"
+kaki-app = "kaki.desktop:main"
+```
+
+因此这条命令进入`kaki.cli.main()`，由Typer解析参数并调用`entry()`。当前没有子命令，继续走默认App分支：
+
+源码节选：[src/kaki/cli.py:29–46](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/cli.py#L29-L46)。
+
+```python
+@app.callback()
+def entry(
+    ctx: typer.Context,
+    cwd: Path | None = typer.Option(None, "--cwd", "-C", help="目标单Git仓库，默认当前目录"),
+    config: Path | None = typer.Option(None, "--config", help="配置文件，默认~/.kaki/config.json"),
+    resume: str | None = typer.Option(None, "--resume", help="恢复会话ID或last，不自动重放未知操作"),
+    model: str | None = typer.Option(None, "--model"),
+    version: bool = typer.Option(False, "--version", is_eager=True),
+):
+    if version:
+        console.print("Kaki Agent " + __version__)
+        raise typer.Exit()
+    ctx.obj = {"cwd": cwd, "config": config, "resume": resume, "model": model}
+    # 阅读：有子命令就交给子命令；本主线是无子命令的默认App。
+    if ctx.invoked_subcommand is not None:
+        return
+    from kaki.desktop import launch
+
+    raise typer.Exit(launch(cwd, config, resume, model))
+```
+
+**本步结束后继续执行：** `desktop.launch(cwd, config, resume, model)`。此时尚未创建窗口、Runtime或本轮任务。
+
+如果用`uv run --project /Users/bytedance/github/kaki_agent kaki-agent -C /path/to/repo`启动，uv可能先检查/同步Kaki依赖；那发生在Python入口之前。Kaki正常启动本身不会自动运行uv sync、下载目标Go项目依赖、构建业务代码或启动Docker。需要这些动作时应显式运行诊断或让后续任务执行。
+
+## 02. launch先加载配置，再决定目录和是否复用实例
+
+**调用位置：** 当前执行栈为`cli.entry → desktop.launch`。
+
+源码节选：[src/kaki/desktop.py:235–256](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/desktop.py#L235-L256)。
+
+```python
+def launch(cwd=None, config_path=None, resume=None, model=None, *, browser=False, no_open=False, port=0):
+    config = load_config(config_path, model=model)
+    path = choose_path(cwd, config)
+    instance = Instance()
+    try:
+        # 阅读：同一个 KAKI_HOME 只保留一个 App 实例；二次启动唤起现有窗口。
+        if not instance.acquire():
+            reuse(instance, path, browser)
+            return 0
+        # 阅读：macOS 默认原生窗口；浏览器与无窗口模式共用同一后台。
+        if sys.platform == "darwin" and not browser and not no_open:
+            return native_window(instance, config, path, resume, port)
+
+        def ready(server):
+            if not no_open:
+                webbrowser.open(server.connect_url)
+
+        try:
+            asyncio.run(serve(instance, config, path, resume, port, on_ready=ready))
+        except KeyboardInterrupt:
+            return 130
+        return 0
+    finally:
+        instance.close()
+```
+
+按代码顺序，第一行先执行`load_config`。进入这个函数：
+
+源码节选：[src/kaki/config.py:162–191](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/config.py#L162-L191)。
+
+```python
+def load_config(path: Path | None = None, *, model: str | None = None) -> Config:
+    path = config_path(path)
+    try:
+        data = normalize(json.loads(path.read_text())) if path.exists() else {}
+    except (ValueError, OSError) as exc:
+        raise KakiError(f"配置无法读取：{path}；未覆盖原文件（{type(exc).__name__}）") from None
+    if not isinstance(data, dict):
+        raise KakiError("配置顶层必须是JSON对象")
+    for key, value in os.environ.items():
+        # 阅读：此处只合并非空的层级环境配置，不启动任何模型请求。
+        if not key.startswith("KAKI_") or "__" not in key or not value.strip():
+            continue
+        parts = key[5:].lower().split("__")
+        node = data
+        for part in parts[:-1]:
+            node = node.setdefault(part, {})
+        try:
+            node[parts[-1]] = json.loads(value)
+        except ValueError:
+            node[parts[-1]] = value
+    if model:
+        data.setdefault("agents", {}).setdefault("defaults", {})["model"] = model
+    try:
+        return Config.model_validate(data)
+    except ValueError as exc:
+        # ValidationError input can contain a secret; only expose field locations and messages.
+        errors = getattr(exc, "errors", lambda **_: [])(include_input=False)
+        raise KakiError(
+            "配置校验失败：" + "; ".join(".".join(map(str, e["loc"])) + ": " + e["msg"] for e in errors)
+        ) from None
+
+```
+
+它读取JSON、规范化camelCase/snake_case、合并非空层级环境变量，并应用显式`--model`覆盖，再进行本地字段校验。这里不会向Right Code发送请求。`apiKey`非空等凭据校验在后续Provider构造时进行；本地校验通过也不表示远端已经认证成功。
+
+`load_config`返回Config对象后，回到launch的下一行`choose_path`：
+
+源码节选：[src/kaki/desktop.py:60–68](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/desktop.py#L60-L68)。
+
+```python
+def choose_path(cwd, config):
+    if cwd:
+        return Path(cwd).expanduser().resolve()
+    if config.agents.defaults.workspace:
+        return Path(config.agents.defaults.workspace).expanduser()
+    result = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, timeout=5
+    )
+    return Path(result.stdout.strip()) if result.returncode == 0 else None
+```
+
+显式`-C`优先，其次配置workspace，再尝试当前Git根。目录确定后创建Instance并取得实例锁：
+
+源码节选：[src/kaki/desktop.py:35–41](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/desktop.py#L35-L41)。
+
+```python
+    def acquire(self):
+        try:
+            # 阅读：失败表示已有App，此次启动只唤起现有窗口。
+            fcntl.flock(self.file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.owner = True
+            return True
+        except BlockingIOError:
+            return False
+```
+
+本主线是新实例，因此继续进入`native_window`。如果锁已被占有，launch调用`reuse`，向现有App发送focus/打开项目请求后直接返回，不创建另一套后台。App实例锁在进程存活期间保留；它与后面“执行一次任务时使用的工作区lease”不是同一把锁。
+
+**本步输出：** Config、目标路径、App实例所有权。**下一步：** 创建后台线程。
+
+## 03. native_window启动真实线程，线程里面才启动asyncio
+
+**当前执行栈：** `launch → native_window`。
+
+源码节选：[src/kaki/desktop.py:137–155](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/desktop.py#L137-L155)。
+
+```python
+def native_window(instance, config, path, resume, port):
+    import webview
+    from PyObjCTools import AppHelper, MachSignals
+    from webview.menu import Menu, MenuAction
+
+    service = NativeService(instance, config, path, resume, port)
+    service.thread.start()
+    # 阅读：ready事件也可能在错误收尾中设置，必须同时检查server是否存在。
+    if not service.ready.wait(20) or not service.server:
+        service.stop()
+        raise KakiError(service.error or "App本地服务启动超时")
+    window = webview.create_window(
+        "Kaki",
+        service.server.connect_url,
+        width=1280,
+        height=860,
+        min_size=(900, 640),
+        background_color="#FFFFFF",
+        text_select=True,
+    )
+```
+
+这里的`service.thread.start()`才是启动实际Python线程。`async def`和`asyncio.create_task`本身不等于创建线程。主线程随后等待后台ready；后台线程执行`NativeService._run`：
+
+源码节选：[src/kaki/desktop.py:114–134](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/desktop.py#L114-L134)。
+
+```python
+    def _run(self):
+        async def run():
+            self.loop = asyncio.get_running_loop()
+
+            def ready(server):
+                self.server = server
+                self.ready.set()
+
+            await serve(*self.args, on_ready=ready)
+
+        try:
+            # 阅读：后台线程拥有 asyncio loop，Cocoa 留在主线程。
+            asyncio.run(run())
+        except BaseException as exc:
+            self.error = safe_error(exc)
+        finally:
+            self.ready.set()
+            self.done.set()
+
+    def stop(self):
+        if self.loop and self.server and not self.done.is_set():
+            # 阅读：跨线程退出使用线程安全投递，不直接跨线程操作 asyncio.Event。
+            self.loop.call_soon_threadsafe(self.server.stop_event.set)
+```
+
+`asyncio.run(run())`创建并运行该线程的事件循环。`run()`取得loop引用后，执行`await serve(...)`。主线程此时仍等待ready，尚未创建WebKit窗口。
+
+**本步输出：** 后台asyncio循环已经存在；但这不表示工作区、模型客户端和会话都已就绪。**下一步：** 跟入serve。
+
+## 04. serve先创建Controller和Server，再启动本机服务
+
+**当前执行栈：** `NativeService._run/run → serve`。
+
+源码节选：[src/kaki/desktop.py:92–102](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/desktop.py#L92-L102)。
+
+```python
+async def serve(instance, config, path, resume, port, *, on_ready=None):
+    # 阅读：先构造Controller和Server，再启动；不是立刻运行AgentLoop。
+    server = AppServer(AppController(config), port=port, initial_path=path, resume=resume)
+    try:
+        await server.start()
+        instance.write(server)
+        print(f"Kaki App已启动：{server.origin} · Ctrl+C退出进程", flush=True)
+        if on_ready:
+            on_ready(server)
+        # 阅读：启动后挂起这个协程等待退出，其他HTTP/WS任务仍由事件循环调度。
+        await server.stop_event.wait()
+    finally:
+        await server.close()
+```
+
+Python会先计算构造参数`AppController(config)`，因此先进入Controller构造器：
+
+源码节选：[src/kaki/app_controller.py:85–117](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/app_controller.py#L85-L117)。
+
+```python
+class AppController:
+    def __init__(self, config: Config, *, runtime_factory=Runtime):
+        self.config, self.runtime_factory = config, runtime_factory
+        self.engines: dict[str, Engine] = {}
+        self.subscribers: set[asyncio.Queue] = set()
+        self.lock = asyncio.Lock()
+        self.closed = False
+        self.seq = 0
+        self.registry = kaki_home() / "app-workspaces.json"
+        self.paths = self._read_paths()
+# 阅读：只读最近项目路径，不会在此打开全部项目或执行历史任务。
+
+    def _read_paths(self):
+        if self.registry.exists():
+            try:
+                data = json.loads(self.registry.read_text())
+                if data.get("schema_version") == 1 and isinstance(data.get("paths"), list):
+                    return list(dict.fromkeys(p for p in data["paths"] if isinstance(p, str)))[:50]
+            except (ValueError, OSError):
+                pass
+        paths = []
+        for file in sorted(
+            (kaki_home() / "projects").glob("*/workspace.json"), key=lambda p: p.stat().st_mtime, reverse=True
+        ):
+            try:
+                value = json.loads(file.read_text())["root"]
+                if Path(value).is_dir() and not value.startswith(
+                    ("/private/tmp/", "/tmp/", "/private/var/folders/")
+                ):
+                    paths.append(value)
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+        return list(dict.fromkeys(paths))[:50]
+
+```
+
+它准备Engine字典、订阅队列集合、创建工作区的锁，并读取最近项目路径。这里只发现候选项目，不会把列表里的每个仓库都打开，也不会执行历史任务。
+
+Controller构造完成后，AppServer保存它及端口、初始目录等参数，准备随机本机访问凭据和停止事件。回到serve的`await server.start()`：
+
+源码节选：[src/kaki/app_server.py:77–122](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/app_server.py#L77-L122)。
+
+```python
+    async def start(self):
+        application = web.Application(middlewares=[self.guard], client_max_size=512 * 1024)
+        application.add_routes(
+            [
+                web.get("/", self.index),
+                web.get("/assets/{name}", self.asset),
+                web.get("/connect/{ticket}", self.connect),
+                web.get("/health", self.health),
+                web.get("/api/state", self.state),
+                web.get("/api/events", self.events),
+                web.post("/api/workspaces", self.open_workspace),
+                web.get("/api/workspaces/{workspace}/sessions", self.sessions),
+                web.post("/api/workspaces/{workspace}/sessions", self.new_session),
+                web.get("/api/workspaces/{workspace}/sessions/{session}", self.detail),
+                web.patch("/api/workspaces/{workspace}/sessions/{session}", self.edit_session),
+                web.post("/api/workspaces/{workspace}/sessions/{session}/send", self.send),
+                web.post("/api/workspaces/{workspace}/sessions/{session}/stop", self.stop),
+                web.post("/api/workspaces/{workspace}/sessions/{session}/answer", self.answer),
+                web.post("/api/shutdown", self.shutdown),
+                web.post("/api/focus", self.focus),
+            ]
+        )
+        self.runner = web.AppRunner(application, access_log=None, shutdown_timeout=3)
+        await self.runner.setup()
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("127.0.0.1", self.port))
+        sock.listen(32)
+        sock.setblocking(False)
+        self.port = sock.getsockname()[1]
+        self.origin = f"http://127.0.0.1:{self.port}"
+        self.cookie = f"kaki_app_{self.port}"
+        # 阅读：此时端口可以接收连接，但初始工作区仍可能未完成。
+        await web.SockSite(self.runner, sock).start()
+        if self.initial_path:
+            try:
+                engine = await self.controller.open_workspace(str(self.initial_path))
+                if self.resume and self.resume != "last":
+                    rows = await self.controller.sessions(engine.runtime.workspace.id)
+                    matches = [s for s in rows if s["id"] == self.resume or s["id"].startswith(self.resume)]
+                    if len(matches) != 1:
+                        raise KakiError("会话不存在或前缀不唯一")
+                    engine.session = matches[0]["id"]
+                self.initial = {"workspace_id": engine.runtime.workspace.id, "session_id": engine.session}
+            except Exception as exc:
+                # 阅读：工作区失败也可保留App，让用户从界面选择或修复项目。
+                self.initial_error = safe_error(exc)
+        return self
+```
+
+按顺序，start注册HTTP/WS路由，创建AppRunner，然后绑定127.0.0.1并启动SockSite。**走到第109行时只是端口已监听。** 初始工作区仍在紧接着的`open_workspace`中准备。
+
+如果工作区初始化失败，start会保存`initial_error`，仍可能返回可用的App外壳，让用户选其他项目。因此`/health`能返回200，只证明本机服务可响应，不证明Git目录、Runtime和远端模型都可用。
+
+**本步结束后继续执行：** 本主线传了有效初始目录，跟入`controller.open_workspace(path)`。
+
+## 05. 打开工作区：先确定Git边界，再构造Runtime
+
+**当前执行栈：** `AppServer.start → AppController.open_workspace`。
+
+源码节选：[src/kaki/app_controller.py:209–229](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/app_controller.py#L209-L229)。
+
+```python
+        async with self.lock:
+            # 阅读：规范化 Git 根目录，生成项目隔离的状态目录。
+            ws = await asyncio.to_thread(Workspace.resolve, Path(path), self.config)
+            if ws.id in self.engines:
+                return self.engines[ws.id]
+            rt = self.runtime_factory(ws, self.config)
+            engine = Engine(rt)
+            # 阅读：事件监听是进程内函数回调。
+            rt.listeners.append(lambda event: self.observe(engine, event))
+            try:
+                await rt.store.open()
+                rows = await rt.store.run("sessions")
+                selected = None
+                for row in rows:
+                    models = await rt.store.run("session_models", row["id"])
+                    if all(
+                        m.removeprefix("openai/") == self.config.agents.defaults.model.removeprefix("openai/")
+                        for m in models
+                    ):
+                        selected = row["id"]
+                        break
+                # 阅读：先恢复历史；首次真正发任务时再连接浏览器 MCP。
+                await rt.initialize(selected, connect_browser=False)
+                engine.session = rt.session_id
+```
+
+首先执行`Workspace.resolve`，不是立即发模型请求。进入该函数：
+
+源码节选：[src/kaki/workspace.py:26–68](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/workspace.py#L26-L68)。
+
+```python
+    @classmethod
+    def resolve(cls, cwd: Path | None, config: Config) -> Workspace:
+        chosen = (cwd or Path(config.agents.defaults.workspace or Path.cwd())).expanduser().resolve()
+        if not chosen.is_dir():
+            raise KakiError(f"工作目录不存在：{chosen}")
+        r = subprocess.run(
+            ["git", "-C", str(chosen), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if r.returncode:
+            raise KakiError("--cwd需要指向单个Git仓库；先在目标目录git init")
+        root = Path(r.stdout.strip()).resolve()
+        if (root / ".gitmodules").exists() and (root / ".gitmodules").read_text().strip():
+            raise KakiError("当前目录含Git子模块；v0.1请指定media_platform等单Git子仓")
+        slug = re.sub(r"[^A-Za-z0-9._-]", "-", root.name) or "workspace"
+        identity = hashlib.sha256(os.fsencode(root)).hexdigest()[:16]
+        state = kaki_home() / "projects" / f"{slug}-{identity}"
+        state.mkdir(parents=True, exist_ok=True, mode=0o700)
+        ws = cls(root, state, identity)
+        # 阅读：先发现规则入口；这里会读取规则文档以识别继承链接。
+        pending = [root / name for name in ["AGENTS.md", "KAKI.md"]]
+        seen = set()
+        while pending and len(seen) < 16:
+            p = pending.pop(0).resolve()
+            if p in seen or not p.is_file():
+                continue
+            seen.add(p)
+            ws.rule_files.append(p)
+            # Explicit inherited rule documents are read-only knowledge, not a write grant.
+            if p.parent != root and (p.parent / "docs").is_dir():
+                ws.knowledge_roots.append((p.parent / "docs").resolve())
+            for match in re.finditer(r"\]\(([^)]+(?:AGENTS|KAKI)\.md)\)", p.read_text(errors="replace")):
+                target = (p.parent / match[1]).resolve()
+                if target.name in {"AGENTS.md", "KAKI.md"} and target in (
+                    root / target.name,
+                    *root.parents[0].glob(target.name),
+                ):
+                    pending.append(target)
+        # 阅读：写的是Kaki状态目录里的项目元数据。
+        (state / "workspace.json").write_text(
+            json.dumps({"workspace_id": identity, "root": str(root)}, ensure_ascii=False)
+        )
+        return ws
+```
+
+它确认目录存在，调用git确定规范根，检查子模块边界，以规范路径生成workspace_id，在KAKI_HOME下建立项目状态目录并写workspace.json。
+
+这里还会发现AGENTS.md/KAKI.md，读取这些规则文档以寻找允许继承的入口。**所以“任务前完全不读文件”不准确；但这也不是扫描整个业务源码或为项目建立向量索引。** 真正为当前用户任务拼接规则正文，要等收到任务后。
+
+Workspace对象返回后，回到Controller。若已有同workspace_id的Engine就复用；本主线尚无Engine，于是创建Runtime：
+
+源码节选：[src/kaki/runtime.py:27–48](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/runtime.py#L27-L48)。
+
+```python
+    def __init__(self, workspace: Workspace, config: Config, *, provider=None, interactive: bool = True):
+        self.workspace, self.config = workspace, config
+        self.interactive = interactive
+        # 阅读：只创建Store对象/执行器，连接在后续store.open中打开。
+        self.store = Store(workspace.state / "kaki.sqlite3", workspace.id)
+        self.provider = provider
+        # 阅读：创建MCP适配对象不等于启动MCP子进程。
+        self.browser = BrowserMcp(workspace, config)
+        self.context = None
+        self.tools = None
+        self.checkpoint = Checkpoint(workspace, self.store, config)
+        self.recovery = Recovery(self.store)
+        self.lease = WorkspaceLease(workspace.state)
+        self.session_id = ""
+        self.active = None
+        self.active_turn = ""
+        self.partial_text = ""
+        self.listeners = []
+        self.question = None
+        self.initialized = False
+        self.closed = False
+        self.recovery_plan = {}
+        self.browser_warning = None
+        self._browser_attempted = False
+```
+
+这些构造动作只建立模块对象和状态引用：
+
+| 此时创建的对象 | 当前已经发生 | 还没有发生 |
+|---|---|---|
+| Store | 准备文件路径和单线程执行器 | 后续open才打开连接并运行SQL |
+| BrowserMcp | 保存browser配置、队列和空工具列表 | 不启动MCP子进程 |
+| Checkpoint | 校验shadow Git目录位置 | 不创建before/after文件快照 |
+| Recovery | 保存Store引用 | 不重放任何旧命令 |
+| Runtime状态 | session_id为空、active为空、initialized为False | 没有用户Turn或推理循环 |
+
+Controller接着创建Engine，给Runtime挂上`observe`监听器，然后执行`await rt.store.open()`。
+
+## 06. 首次打开SQLite：在专用线程直接读写本机文件
+
+**当前执行栈：** `open_workspace → Store.open → Store.run("open") → Store._open`。
+
+源码节选：[src/kaki/store.py:64–89](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/store.py#L64-L89)。
 
 ```python
     def __init__(self, path: Path, workspace_id: str):
@@ -75,220 +519,42 @@ sequenceDiagram
             self.db.execute("PRAGMA synchronous=FULL")
 ```
 
-`ThreadPoolExecutor(max_workers=1)` 让创建连接和执行 SQL 都落在同一专用线程，满足 SQLite 连接的线程约束，也避免磁盘操作直接阻塞 asyncio。`run_in_executor` 不是向远端派任务。网络模型请求、Shell等待和浏览器等待在事务外进行，数据库只持有短事务。
+SQLite是嵌入Kaki进程的数据库库。这里的`sqlite3.connect(self.path)`直接打开本地文件，不需要启动独立数据库服务或连接数据库端口。Store.run把同步SQL交给唯一连接线程执行，等待时后台asyncio仍可响应其他事件。
 
-每个项目路径规范化后生成 workspace_id，数据库路径为：
+打开后还核对数据库版本：
 
-```text
-KAKI_HOME（默认 ~/.kaki）
-└── projects/<Git根目录名>-<规范路径SHA256前16位>/
-    ├── workspace.json
-    ├── kaki.sqlite3
-    ├── kaki.sqlite3-wal       # 运行中可能存在
-    ├── kaki.sqlite3-shm       # 运行中可能存在
-    ├── context/traces/<session_id>/<turn_id>.jsonl
-    ├── context/archive/       # 按需创建
-    ├── artifacts/             # 按需创建
-    ├── browser-mcp.log        # 连接MCP后创建
-    └── checkpoints/kaki-shadow.git/
-```
-
-WAL 模式将事务更新先写入旁边的 WAL 文件，之后通过数据库 checkpoint 合入主文件；`-shm` 用于 WAL 索引协调。它们是数据库运行文件，不是 Agent 的文本执行日志。不要在运行期间随意删除这些旁文件。[SQLite WAL说明](https://sqlite.org/wal.html)。
-
-这里的“SQLite checkpoint”和 `kaki/checkpoint.py` 完全不同：后者使用独立 Git 保存工作区文件版本。SQLite 事务不能撤销已经执行的 Shell、浏览器或网络副作用。
-
-### 1.3 数据库里保存哪些东西
-
-| 表 | 作用 | 阅读时重点 |
-|---|---|---|
-| sessions | 会话标题、项目归属、软归档标记 | 会话包含多次任务，archived不等于删除 |
-| turns | 一次新任务的输入、状态、结果、错误 | request_id用于幂等，turn_id关联后续执行 |
-| messages | 原始用户、assistant、tool消息 | 压缩窗口不删除这里的规范原文 |
-| tool_runs | planned/running/真实结果/unknown | 是否真的执行过，以持久意图和观测为准 |
-| model_calls | 每次网络尝试、Token用量、耗时、错误分类 | 一轮任务可能有多个main/curator/finalize调用 |
-| events | 事务内关键事实事件 | 不等于全部实时UI事件 |
-| context_state / archives | 派生窗口状态与原文归档引用 | 可重建状态与完整历史职责不同 |
-| memories | 显式长期记忆及版本 | 目前不是embedding向量索引 |
-| snapshots | before/after文件快照引用与成功状态 | 只有ready才有可用快照内容 |
-
-SQLite 是此处的结构化持久层；本项目没有独立 embedding 调用或向量数据库模块。记忆/Skills 的相关性检索见 `context/knowledge.py` 的词项与排序逻辑，不能把它理解成“GPT维护的本地向量库”。
-
-## 2. 源码按什么顺序读
-
-先抓住一条纵向链路，再读每个模块的失败分支。不要从依赖、配置字段或所有工具定义开始逐行遍历。
-
-| 顺序 | 文件 / 关键入口 | 要回答的问题 |
-|---|---|---|
-| 1 | pyproject.toml 的 project.scripts；cli.py 的 entry/main | 命令到底进入哪个Python函数？默认App与tui/run怎样分流？ |
-| 2 | desktop.py 的 launch/native_window/NativeService/serve | 单实例、Cocoa主线程、后台asyncio循环怎样建立？ |
-| 3 | app_server.py 的 start/guard/send/events | HTTP与WS接到哪里，谁校验身份和Origin？ |
-| 4 | ui/app.mjs 的 sendText/connect；app_controller.py 的 open_workspace/send/_execute/observe | 页面状态如何投影，谁持有后台任务？ |
-| 5 | types.py；runtime.py 的 initialize/submit/_turn | 核心对象是什么，谁拥有会话、租约、快照和终态？ |
-| 6 | loop.py 的 AgentLoop.run | 模型、工具、真实观测如何构成有界循环？ |
-| 7 | provider.py 的 wire_input/normalize_response/complete | 内部Message怎样变成Responses请求，流式终事件怎样解析？ |
-| 8 | tools.py 的 execute/execute_many/exec；browser_mcp.py | 真正的I/O在哪里，MCP怎样发现和分派工具？ |
-| 9 | context/engine.py → history.py/tokens.py → curator.py | 输入窗口怎样选、怎样裁剪、如何失败回退？ |
-| 10 | store.py → checkpoint.py → recovery.py | 哪些写入同事务，进程中断怎样恢复未知操作？ |
-| 11 | tests/test_app_controller.py、test_store_runtime.py、test_context.py、test_app_process.py | 用哪些反例验证上面的约束？ |
-
-核心调用链可以先在IDE中连续跳转：
-
-```text
-kaki-agent
-  → kaki.cli.main / entry
-  → desktop.launch → NativeService → serve → AppServer.start
-  → AppController.open_workspace → Runtime.initialize
-
-点击发送
-  → ui.sendText → POST .../send → AppServer.send
-  → AppController.send → 外层Task(_execute)
-  → Runtime.run → submit → 内层Task(_turn)
-  → ContextEngine → AgentLoop → Provider → ToolRegistry / BrowserMcp
-  → Store提交事实 → Runtime收尾 → 外层Task解除busy → UI显示终态
-```
-
-读代码时要分清两个同名“task”：`asyncio.Task` 是同一事件循环中的协程任务；业务 Turn 是数据库里的用户任务。它们都不是新进程或多 Agent。AppController 和 Runtime 各持有一层 Task，分别约束界面生命周期和本轮业务执行。
-
-## 3. 先认识关键数据结构
-
-| 对象 / ID | 构造位置 | 作用 |
-|---|---|---|
-| Workspace / workspace_id | Workspace.resolve | 规范Git根目录、状态目录、知识边界；路径变化会改变作用域 |
-| session_id（s_） | Store._new_session | 同一项目的一段连续对话 |
-| turn_id（t_） | Store._accept_turn | 一次新任务，关联消息、工具、模型尝试和快照 |
-| request_id | 前端crypto.randomUUID或Runtime生成 | 避免同一请求重试导致再次执行；不同内容不能复用同ID |
-| Message | types.Message / Store._append | role/content/tool_calls/native_items/parts/artifacts；落库后拥有稳定ID |
-| ModelResponse | normalize_response | text、tool_calls、原生output、usage、finish_reason、provider_id |
-| ToolCall / tool_call_id | 模型function_call解析 | 调用名称与JSON参数；call_id用于回传配对 |
-| ToolRun / run_id（run_） | Store._commit_model | 本机一次执行意图，不能与模型call_id混为一谈 |
-| ToolResult | 工具处理器返回 | 正文、失败标志、退出码、附件、涉及文件；是真实观测 |
-| TurnResult | AgentLoop产生，Runtime补充 | status/text/stop_reason/tools/verification/usage/快照/错误 |
-| Engine | AppController.open_workspace | Runtime、外层Task、phase、drafts和当前执行会话的内存投影 |
-| TokenBudget / ContextPlan / AssembledContext | ContextEngine | 预算、历史选择计划、最终可发送窗口 |
-
-Store 内每会话的消息 `seq` 与消息稳定主键 `id` 不同。上下文计划引用消息 `id`；MCP和上游模型也有自己的ID，不应当作会话主键。
-
-## 4. 启动：从命令到可以看会话的窗口
-
-### 4.1 入口与配置读取
-
-`pyproject.toml` 注册 `kaki-agent = "kaki.cli:main"` 和 `kaki-app = "kaki.desktop:main"`。uv安装的是这两个入口脚本；目标代码仓库不用安装Kaki依赖。
-
-源码节选：[ src/kaki/cli.py:40–47 ](https://github.com/anuolxl/kaki_agent/blob/686301bec20ebda7e93b92d41760b29cea40ff00/src/kaki/cli.py#L40-L47)。
+源码节选：[src/kaki/store.py:90–106](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/store.py#L90-L106)。
 
 ```python
-        raise typer.Exit()
-    ctx.obj = {"cwd": cwd, "config": config, "resume": resume, "model": model}
-    if ctx.invoked_subcommand is not None:
-        return
-    # 阅读：默认入口已经切到 App；tui/run/doctor 走各自子命令。
-    from kaki.desktop import launch
-
-    raise typer.Exit(launch(cwd, config, resume, model))
-
+            version = self.db.execute("PRAGMA user_version").fetchone()[0]
+            if version > 2:
+                raise KakiError("状态数据库版本比当前Kaki新，请不要降级覆盖")
+            # Preserve a SQLite-consistent copy, including WAL data, before adding App metadata.
+            if version == 1:
+                backup = self.path.with_name(self.path.name + ".v1-" + uid()[:12] + ".backup")
+                descriptor = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                os.close(descriptor)
+                # 阅读：迁移前使用SQLite一致备份，不直接复制可能仍有WAL的主文件。
+                with sqlite3.connect(backup) as connection:
+                    self.db.backup(connection)
+            self.db.executescript(SCHEMA)
+            columns = {row[1] for row in self.db.execute("PRAGMA table_info(sessions)")}
+            if "archived" not in columns:
+                self.db.execute("ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
+            self.db.execute("PRAGMA user_version=2")
+            self.db.commit()
+            os.chmod(self.path, 0o600)
 ```
 
-配置在 `desktop.launch` 开始时加载：显式 CLI 模型覆盖 > 非空 `KAKI_...__...` 环境变量 > JSON > 默认值。`providers.openai.apiBase/apiKey` 与 `agents.defaults.model` 继续兼容camelCase/snake_case，空环境值不会抹掉有效配置。这里只读取凭据，浏览器页面不会获得API Key。
+旧schema1先用SQLite backup API备份，再增加归档字段并升级schema2；不会通过删库解决问题。WAL和shm是SQLite的运行旁文件，不是Agent的文本执行日志。
 
-源码节选：[ src/kaki/desktop.py:235–256 ](https://github.com/anuolxl/kaki_agent/blob/686301bec20ebda7e93b92d41760b29cea40ff00/src/kaki/desktop.py#L235-L256)。
+**本步输出：** 可用的SQLite连接和表结构。数据库里可能已经有旧会话。**下一步：** 回到Controller查询sessions及其主模型记录，挑选最近兼容会话，再调用`Runtime.initialize(selected, connect_browser=False)`。
 
-```python
-def launch(cwd=None, config_path=None, resume=None, model=None, *, browser=False, no_open=False, port=0):
-    config = load_config(config_path, model=model)
-    path = choose_path(cwd, config)
-    instance = Instance()
-    try:
-        # 阅读：同一个 KAKI_HOME 只保留一个 App 实例；二次启动唤起现有窗口。
-        if not instance.acquire():
-            reuse(instance, path, browser)
-            return 0
-        # 阅读：macOS 默认原生窗口；浏览器与无窗口模式共用同一后台。
-        if sys.platform == "darwin" and not browser and not no_open:
-            return native_window(instance, config, path, resume, port)
+## 07. initialize建立内核依赖；此刻仍没有任务Prompt
 
-        def ready(server):
-            if not no_open:
-                webbrowser.open(server.connect_url)
+**当前执行栈：** `open_workspace → Runtime.initialize`。
 
-        try:
-            asyncio.run(serve(instance, config, path, resume, port, on_ready=ready))
-        except KeyboardInterrupt:
-            return 130
-        return 0
-    finally:
-        instance.close()
-```
-
-`choose_path` 优先显式 `-C`，其次配置workspace，再尝试当前Git根。`Instance` 用用户状态目录的flock保证单实例；已有实例只接收focus/打开项目请求，不另起第二套模型后台。要改变已运行实例的模型或配置，退出后重启。
-
-### 4.2 原生窗口和后台线程
-
-源码节选：[ src/kaki/desktop.py:114–134 ](https://github.com/anuolxl/kaki_agent/blob/686301bec20ebda7e93b92d41760b29cea40ff00/src/kaki/desktop.py#L114-L134)。
-
-```python
-    def _run(self):
-        async def run():
-            self.loop = asyncio.get_running_loop()
-
-            def ready(server):
-                self.server = server
-                self.ready.set()
-
-            await serve(*self.args, on_ready=ready)
-
-        try:
-            # 阅读：后台线程拥有 asyncio loop，Cocoa 留在主线程。
-            asyncio.run(run())
-        except BaseException as exc:
-            self.error = safe_error(exc)
-        finally:
-            self.ready.set()
-            self.done.set()
-
-    def stop(self):
-        if self.loop and self.server and not self.done.is_set():
-            # 阅读：跨线程退出使用线程安全投递，不直接跨线程操作 asyncio.Event。
-            self.loop.call_soon_threadsafe(self.server.stop_event.set)
-```
-
-macOS主线程运行Cocoa/WKWebView；后台线程内的 `asyncio.run` 运行本机AppServer、Controller和Agent内核。Store另有专用SQL线程，耗时同步文件工作通过线程卸载。Shell、Git和MCP按需创建子进程。
-
-`serve` 创建 `AppServer(AppController(config))` 并启动。AppServer只监听127.0.0.1，默认随机端口，校验Host、Origin及本机capability。窗口先访问connect入口，获得HttpOnly/SameSite Cookie，再跳到正文页；HTTP读历史，WS收进度。单实例凭据和模型API Key是两种不同凭据。
-
-### 4.3 打开项目、恢复历史，不立刻执行旧任务
-
-源码节选：[ src/kaki/app_controller.py:209–229 ](https://github.com/anuolxl/kaki_agent/blob/686301bec20ebda7e93b92d41760b29cea40ff00/src/kaki/app_controller.py#L209-L229)。
-
-```python
-        async with self.lock:
-            # 阅读：规范化 Git 根目录，生成项目隔离的状态目录。
-            ws = await asyncio.to_thread(Workspace.resolve, Path(path), self.config)
-            if ws.id in self.engines:
-                return self.engines[ws.id]
-            rt = self.runtime_factory(ws, self.config)
-            engine = Engine(rt)
-            # 阅读：事件监听是进程内函数回调。
-            rt.listeners.append(lambda event: self.observe(engine, event))
-            try:
-                await rt.store.open()
-                rows = await rt.store.run("sessions")
-                selected = None
-                for row in rows:
-                    models = await rt.store.run("session_models", row["id"])
-                    if all(
-                        m.removeprefix("openai/") == self.config.agents.defaults.model.removeprefix("openai/")
-                        for m in models
-                    ):
-                        selected = row["id"]
-                        break
-                # 阅读：先恢复历史；首次真正发任务时再连接浏览器 MCP。
-                await rt.initialize(selected, connect_browser=False)
-                engine.session = rt.session_id
-```
-
-Workspace.resolve确认目标为单Git根，生成路径hash和状态目录。Controller每工作区保留一个Engine/Runtime。选取最近且主模型兼容的未归档会话；没有则新建。打开其他会话只是读取历史，不会在已有任务运行中把Runtime切换走。
-
-源码节选：[ src/kaki/runtime.py:67–76 ](https://github.com/anuolxl/kaki_agent/blob/686301bec20ebda7e93b92d41760b29cea40ff00/src/kaki/runtime.py#L67-L76)。
+源码节选：[src/kaki/runtime.py:67–76](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/runtime.py#L67-L76)。
 
 ```python
     async def initialize(self, resume: str | None = None, *, connect_browser: bool = True):
@@ -304,11 +570,350 @@ Workspace.resolve确认目标为单Git根，生成路径hash和状态目录。Co
         self.tools = ToolRegistry(self.workspace, self.config, self.context, self.browser, self.ask_user)
 ```
 
-Runtime创建Provider、ContextEngine、ToolRegistry，添加附件读取等工具。恢复阶段先取得工作区lease再核对未完成记录；其他进程占有lease时，不擅自改写其活跃状态。App用 `connect_browser=False` 初始化，因此看历史不依赖MCP启动；首次发送时才 `ensure_browser`。
+Store.open第二次被调用时因已有连接而直接返回。接着才创建RightCodeProvider：
 
-SQLite版本1升级到2前用backup API保存包含WAL的一致备份，再增加sessions.archived。备份迁移不删除旧对话。恢复会话也不会自动重放结果未知的Shell或浏览器操作。
+源码节选：[src/kaki/provider.py:137–150](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/provider.py#L137-L150)。
 
-图2是启动控制流和返回数据。实际CLI配置读取发生在launch阶段；图中把NativeService内部线程创建折叠为“启动后台”。
+```python
+class RightCodeProvider:
+    def __init__(self, config: Config, record: Record | None = None, part_resolver=None):
+        # 阅读：本地校验配置，并非向Right Code验证密钥。
+        config.validate_credentials()
+        self.config = config
+        self.record = record
+        self.part_resolver = part_resolver
+        p = config.providers.openai
+        # 阅读：构造客户端，实际网络请求在complete中。
+        self.client = AsyncOpenAI(
+            api_key=p.api_key.get_secret_value(),
+            base_url=p.api_base.rstrip("/"),
+            default_headers=p.extra_headers or {},
+            timeout=p.timeout,
+            max_retries=0,
+        )
+```
+
+这里是本地凭据/地址校验以及AsyncOpenAI客户端构造，不是向Right Code登录，也不是预热GPT。首次真正HTTPS模型请求在后面的Provider.complete中。
+
+接下来创建ContextEngine：
+
+源码节选：[src/kaki/context/engine.py:32–40](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/context/engine.py#L32-L40)。
+
+```python
+class ContextEngine:
+    def __init__(self, workspace: Workspace, store: Store, config: Config, provider):
+        self.workspace, self.store, self.config, self.provider = workspace, store, config, provider
+        self.memory = Memory(store, config)
+        self.skills = Skills(workspace, config)
+        self.rules = Rules(workspace)
+        # 阅读：Archive构造器会创建状态子目录，但此时没有归档用户任务。
+        self.archive = Archive(workspace, store, config)
+        self.curator = Curator(self)
+        self.last_metadata = {}
+```
+
+它创建Memory、Skills、Rules、Archive和Curator对象。Memory/Skills/Rules此时主要保存依赖或根目录，尚未按某个用户输入检索。Archive有一处实际目录操作：
+
+源码节选：[src/kaki/context/archive.py:16–22](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/context/archive.py#L16-L22)。
+
+```python
+class Archive:
+    def __init__(self, workspace: Workspace, store: Store, config: Config):
+        self.workspace, self.store = workspace, store
+        self.root = (workspace.state / config.context.archive_dir).resolve()
+        if self.root == workspace.state or not self.root.is_relative_to(workspace.state):
+            raise KakiError("context.archiveDir必须位于项目状态目录内部")
+        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+```
+
+因此启动时可以已经存在空的context/archive目录，但没有因此生成一次任务归档。Checkpoint也是同样的区分：构造对象不等于已经保存工作区快照。
+
+回到initialize下一行，ToolRegistry创建内置文件、搜索、Shell、提问和记忆工具的schema及处理器引用，再添加artifact读取工具。**注册工具不等于执行工具；`self.read`等是函数引用，不是在这里读取用户业务文件。** 浏览器schema还没发现，因为本入口显式传了connect_browser=False。
+
+**本步输出：** 内核依赖对象、内置工具目录。**下一步：** 继续initialize后半段，确定会话与恢复状态。
+
+## 08. 恢复会话与派生状态，不执行旧任务
+
+源码节选：[src/kaki/runtime.py:88–123](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/runtime.py#L88-L123)。
+
+```python
+        sessions = await self.store.run("sessions")
+        if resume:
+            if resume == "last":
+                if not sessions:
+                    raise KakiError("当前项目还没有可恢复会话")
+                self.session_id = sessions[0]["id"]
+            else:
+                matches = [s for s in sessions if s["id"] == resume or s["id"].startswith(resume)]
+                if len(matches) != 1:
+                    raise KakiError("会话不存在或前缀不唯一")
+                self.session_id = matches[0]["id"]
+            await self.check_session_model(self.session_id)
+            try:
+                self.lease.acquire()
+            except KakiError:
+                self.recovery_plan = {"items": [], "notice": "工作区仍有其他活跃任务，未执行恢复改写"}
+            else:
+                try:
+                    # 阅读：恢复数据库事实，不能自动重放未完成副作用。
+                    self.recovery_plan = await self.recovery.reconcile(self.session_id)
+                finally:
+                    self.lease.release()
+        else:
+            self.session_id = await self.store.run("new_session")
+        self.context.last_metadata = (await self.store.run("context_get", self.session_id))["plan"]
+        # 阅读：App显式传False；TUI默认True，后面分别说明。
+        if connect_browser:
+            await self.ensure_browser()
+        self.initialized = True
+        await self.emit(
+            "runtime.ready",
+            data={
+                "session_id": self.session_id,
+                "browser_tools": len(self.browser.tools),
+                "browser_warning": self.browser_warning,
+                "recovery": self.recovery_plan,
+            },
+        )
+```
+
+本主线恢复Controller已选中的兼容会话；没有可恢复会话时创建新session_id。恢复前先检查主模型兼容性，再取得工作区lease，调用Recovery.reconcile：
+
+源码节选：[src/kaki/recovery.py:12–48](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/recovery.py#L12-L48)。
+
+```python
+    async def reconcile(self, session: str) -> dict:
+        interrupted = await self.store.run("recover", session)
+        turns = await self.store.run("turns", session)
+        items = []
+        for turn in turns[-5:]:
+            if turn["status"] == "completed":
+                continue
+            runs = await self.store.run("tool_runs", turn["id"])
+            snapshots = await self.store.run("snapshots", turn["id"])
+            items.append(
+                {
+                    "turn_id": turn["id"],
+                    "original_request": turn["text"],
+                    "status": turn["status"],
+                    "reason": turn["stop_reason"],
+                    "known_results": [
+                        {"name": r["name"], "state": r["state"]}
+                        for r in runs
+                        if r["state"] in ("succeeded", "failed")
+                    ],
+                    "unknown_or_cancelled": [
+                        {"name": r["name"], "state": r["state"], "arguments": json.loads(r["arguments"])}
+                        for r in runs
+                        if r["state"] in ("unknown", "cancelled")
+                    ],
+                    "snapshots": [
+                        {"id": s["id"], "phase": s["phase"], "state": s["state"], "commit": s["commit_id"]}
+                        for s in snapshots
+                    ],
+                    "draft": json.loads(turn["result_json"] or "{}").get("draft"),
+                }
+            )
+        return {
+            "recovered_turns": len(interrupted),
+            "items": items,
+            "requires_new_observation": any(x["unknown_or_cancelled"] for x in items),
+        }
+```
+
+进入这个函数后，首先执行store.run("recover")，底层SQL的关键部分是：
+
+源码节选：[src/kaki/store.py:359–377](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/store.py#L359-L377)。
+
+```python
+        recovered = []
+        with self.db:
+            rows = self.db.execute(
+                "SELECT * FROM turns WHERE session_id=? AND status IN ('queued','running','waiting_user')",
+                (session,),
+            ).fetchall()
+            for row in rows:
+                # 阅读：原先正在执行的副作用只能判 UNKNOWN，不能宣称失败后随便重试。
+                self._pending_observations(row["id"], reason="上次进程退出")
+                self.db.execute(
+                    "UPDATE model_calls SET status='interrupted',ended=? WHERE turn_id=? AND status='running'",
+                    (now(), row["id"]),
+                )
+                self.db.execute(
+                    # 阅读：遗留活跃 Turn 标记 interrupted/process_exit。
+                    "UPDATE turns SET status='interrupted',stop_reason='process_exit',ended=? WHERE id=?",
+                    (now(), row["id"]),
+                )
+                self._event(session, row["id"], "turn.recovered", {"reason": "process_exit"})
+                recovered.append(dict(row))
+        return recovered
+```
+
+底层recover将旧planned标为cancelled、旧running标为unknown、旧活跃Turn标为interrupted。随后Recovery汇总最近未完成任务、确定结果、未知参数和快照引用，供下一次新任务核对现场。它不会执行原先那条Shell、恢复网页动作或自动继续旧推理。
+
+读取`context_state.plan`只恢复上次诊断元数据，不是重新组装当前模型窗口。由于App传了False，initialize跳过ensure_browser，设置initialized=True并发出runtime.ready。
+
+现在回到Controller的initialize下一行：
+
+源码节选：[src/kaki/app_controller.py:230–248](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/app_controller.py#L230-L248)。
+
+```python
+                # An existing process holding the lease retains its running records.
+                try:
+                    rt.lease.acquire()
+                except KakiError:
+                    pass
+                else:
+                    try:
+                        # 阅读：核对其余会话的孤儿状态；不是批量重新执行任务。
+                        for row in rows:
+                            await rt.store.run("recover", row["id"])
+                    finally:
+                        rt.lease.release()
+            except BaseException:
+                await rt.close()
+                raise
+            self.engines[ws.id] = engine
+            self.paths = [str(ws.root), *(p for p in self.paths if p != str(ws.root))][:50]
+            await asyncio.to_thread(self._save_paths)
+            self.publish("projects.changed")
+            return engine
+```
+
+Controller在能取得lease时核对其余会话的孤儿记录，然后保存Engine和最近工作区列表。**此时可能已经写入session、恢复记录、workspace元数据和状态目录；但没有新用户请求、before快照或模型调用。**
+
+**返回路径：** Controller返回Engine → AppServer.start保存initial workspace/session并返回 → serve写instance.json、调用on_ready → NativeService保存server引用并设置ready。
+
+## 09. 后台ready后，主线程才创建窗口并注册关闭处理
+
+回到第03步里等待的主线程。它同时检查ready和server引用，然后创建WebKit窗口，指向受保护的connect_url。
+
+ready不是“所有功能都健康”的单一布尔值：NativeService的finally在失败时也会设置ready以唤醒等待者，所以代码还检查server是否存在；AppServer也可能携带initial_error。已创建的Runtime还可能有浏览器警告，或者远端密钥在首次实际请求时才被服务端拒绝。
+
+窗口启动前还注册关闭回调、done监控、SIGINT/SIGTERM处理和菜单。主线程进入Cocoa事件循环，后台线程继续自己的asyncio循环。退出信号使用线程安全投递，先完成后台清理再关闭窗口，不在这一阶段启动AgentLoop。
+
+**本步输出：** 原生窗口开始加载页面。**下一步：** 走窗口的首次HTTP请求和页面脚本。
+
+## 10. 在首个任务之前，页面加载历史、订阅状态，然后待命
+
+窗口先访问connect入口。服务端核对本机访问凭据，设置HttpOnly/SameSite Cookie后跳回页面：
+
+源码节选：[src/kaki/app_server.py:140–145](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/app_server.py#L140-L145)。
+
+```python
+    async def connect(self, request):
+        if not hmac.compare_digest(request.match_info["ticket"], self.secret):
+            raise web.HTTPForbidden()
+        result = web.Response(status=303, headers={"Location": "/"})
+        result.set_cookie(self.cookie, self.secret, httponly=True, samesite="Strict", path="/")
+        return result
+```
+
+页面加载HTML/CSS/JS后，执行app.mjs末尾的启动代码：
+
+源码节选：[src/kaki/ui/app.mjs:215–220](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/ui/app.mjs#L215-L220)。
+
+```javascript
+setInterval(updateElapsed,1000);
+try{
+  // 阅读：先取项目元数据，再建立WebSocket，不触发模型推理。
+  const info=await loadProjects();connect();if(info.initial_error)showError(info.initial_error);
+  if(info.initial){const project=state.projects.find(p=>p.workspace_id===info.initial.workspace_id);if(project){state.wid=info.initial.workspace_id;state.path=project.path;await loadSessions();await selectSession(info.initial.session_id);renderProjects();}}
+  updateStatus();
+}catch(error){showError(error);$('status-text').textContent='请从 Kaki App 启动器重新打开窗口';}
+```
+
+第一步`loadProjects`只请求本机元数据：
+
+源码节选：[src/kaki/ui/app.mjs:19–21](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/ui/app.mjs#L19-L21)。
+
+```javascript
+async function loadProjects(){
+  const info=await api('/api/state');state.projects=info.projects;$('model').textContent=info.model.replace(/^openai\//,'');
+  renderProjects();return info;
+```
+
+然后建立WebSocket；服务端为这一个视图建立队列和writer Task：
+
+源码节选：[src/kaki/app_server.py:239–254](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/app_server.py#L239-L254)。
+
+```python
+    async def events(self, request):
+        if request.headers.get("Origin") != self.origin:
+            raise web.HTTPForbidden()
+        ws = web.WebSocketResponse(heartbeat=20, max_msg_size=1024)
+        await ws.prepare(request)
+        queue = asyncio.Queue(maxsize=256)
+        self.controller.subscribers.add(queue)
+        self.sockets.add(ws)
+
+        async def writer():
+            await ws.send_json({"type": "connected", "seq": self.controller.seq})
+            while True:
+                # 阅读：无事件时等待队列，不在这里轮询模型。
+                message = await queue.get()
+                await asyncio.wait_for(ws.send_str(json.dumps(message, ensure_ascii=False)), 5)
+
+        task = asyncio.create_task(writer(), name="kaki-app-viewer")
+```
+
+没有新事件时，writer挂在queue.get等待，不会轮询模型。此处while True是视图推送循环，不是Agent推理循环。heartbeat处理连接保活，不意味着在请求GPT。
+
+页面随后取会话列表，选中初始会话并读取detail。refresh的调用和渲染顺序是：
+
+源码节选：[src/kaki/ui/app.mjs:61–75](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/ui/app.mjs#L61-L75)。
+
+```javascript
+async function refresh(){
+  if(!state.wid||!state.sid||state.closed)return;
+  state.refreshAgain=true;
+  if(state.refreshTask)return state.refreshTask;
+  state.refreshTask=(async()=>{
+    while(state.refreshAgain&&!state.closed){
+      state.refreshAgain=false;const workspace=state.wid, session=state.sid;
+      const detail=await api(route());
+      if(workspace!==state.wid||session!==state.sid)continue;
+      state.detail=detail;$('session-title').textContent=detail.session.title;
+      $('project-title').textContent=state.path?.split('/').at(-1)||'工作区';$('project-title').title=state.path||'';
+      renderTranscript();updateStatus();await loadSessions();
+    }
+  })().finally(()=>{state.refreshTask=null;});
+  return state.refreshTask;
+```
+
+Controller.detail读取完整消息、Turn、工具行和context_state，页面显示历史正文和状态。新建/重命名/归档/切换会话也可以发生在第一个新任务之前，这些操作会读写本机状态，但不会自动启动模型。
+
+此时Engine的初始状态来自：
+
+源码节选：[src/kaki/app_controller.py:47–64](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/app_controller.py#L47-L64)。
+
+```python
+@dataclass
+class Engine:
+    runtime: Runtime
+    task: asyncio.Task | None = None
+    session: str = ""
+    phase: str = "idle"
+    started: float | None = None
+    turn_id: str = ""
+    draft: dict = field(default_factory=dict)
+    tools: dict = field(default_factory=dict)
+    warnings: list[str] = field(default_factory=list)
+    result: dict | None = None
+    pending: str = ""
+    notification: asyncio.TimerHandle | None = None
+
+    @property
+    def busy(self):
+        return self.task is not None and not self.task.done()
+```
+
+正常情况下为phase=idle、task=None、busy=False，Runtime.initialized=True。已有会话可以有旧历史，但当前没有活跃Turn。App路径里浏览器MCP尚未启动，Skills没有按当前任务匹配，当前Prompt尚未组装，也没有后台主动压缩或Prompt Cache预热。
+
+这里的idle是Engine内存状态。恢复旧会话时，页面还可能显示上一次Turn的completed/interrupted等历史状态；那不表示本次启动已经替用户执行了一轮新任务。
+
+后台并非退出了：serve等待stop_event，aiohttp等待HTTP/WS事件，队列writer等新消息，前端定时器更新已运行时间（空闲时为空）。真正持续运行的是**asyncio事件循环**；`AgentLoop.run`的while还没进入。以下启动总时序图对应刚才01–10步，先不要把它与后面的单次任务循环混为一谈。
+
 
 ```mermaid
 sequenceDiagram
@@ -333,11 +938,13 @@ sequenceDiagram
     A-->>D: D6 会话历史、模型名称和实时状态
 ```
 
-## 5. 接单：用户按下发送后发生什么
+## 11. 用户第一次点击发送：页面提交文本和请求ID
 
-### 5.1 页面发HTTP，202不是任务完成
+前面已经把App准备到可交互状态。现在才出现一个新的用户任务，例如教学输入“读取README并简要介绍此仓库，不修改文件”。接下来的代码依次处理这一次任务，而不是重新启动整个App。
 
-源码节选：[ src/kaki/ui/app.mjs:150–158 ](https://github.com/anuolxl/kaki_agent/blob/686301bec20ebda7e93b92d41760b29cea40ff00/src/kaki/ui/app.mjs#L150-L158)。
+**当前函数：** 浏览器里的`sendText(text)`。
+
+源码节选：[src/kaki/ui/app.mjs:150–158](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/ui/app.mjs#L150-L158)。
 
 ```javascript
 async function sendText(text){
@@ -353,7 +960,15 @@ async function sendText(text){
 }
 ```
 
-源码节选：[ src/kaki/app_server.py:203–211 ](https://github.com/anuolxl/kaki_agent/blob/686301bec20ebda7e93b92d41760b29cea40ff00/src/kaki/app_server.py#L203-L211)。
+先检查连接/会话是否可发送，再设置sending，防止页面重复提交。普通任务发往send；如果当时正在回答ask_user，则发往answer，继续原Turn。当前主线是新任务，因此发送text和新request_id。
+
+request_id用于幂等，不是聊天内容。它与workspace_id、session_id通过URL和JSON一起进入本机HTTP层。
+
+## 12. AppServer接到HTTP：先校验，再交给Controller
+
+AppServer的guard先核对Host、Origin和本机访问凭据。通过后才进入send路由：
+
+源码节选：[src/kaki/app_server.py:203–211](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/app_server.py#L203-L211)。
 
 ```python
     async def send(self, request):
@@ -368,11 +983,13 @@ async function sendText(text){
         return web.json_response({"accepted": True}, status=202)
 ```
 
-`POST /api/workspaces/{workspace}/sessions/{session}/send` 传 `text/request_id`。接入层负责鉴权与参数传递，不直接调用大模型。202只表示Controller已创建可管理的异步任务；MCP准备、工作区租约或模型请求仍可能在之后失败。
+路由解析JSON，将三个作用域参数和文本传给`controller.send`。不要因为看见这一行await，就认为路由要等整个Agent执行结束：await等待的是Controller完成接收和调度，不是等待Runtime完成任务。
 
-### 5.2 外层Task覆盖准备、运行和收尾
+**下一步进入Controller.send。它返回后，路由发送HTTP202。** 后台Task和响应发送都受事件循环调度，二者可以交错；不能把“浏览器收到202”当成MCP启动之前的固定分界，更不能当成任务完成。
 
-源码节选：[ src/kaki/app_controller.py:334–358 ](https://github.com/anuolxl/kaki_agent/blob/686301bec20ebda7e93b92d41760b29cea40ff00/src/kaki/app_controller.py#L334-L358)。
+## 13. Controller建立外层Task：此时还可能没有Turn
+
+源码节选：[src/kaki/app_controller.py:334–358](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/app_controller.py#L334-L358)。
 
 ```python
     async def send(self, workspace: str, session: str, text: str, request_id=None):
@@ -404,45 +1021,139 @@ async function sendText(text){
         self.notify(e)
 ```
 
-源码节选：[ src/kaki/app_controller.py:360–385 ](https://github.com/anuolxl/kaki_agent/blob/686301bec20ebda7e93b92d41760b29cea40ff00/src/kaki/app_controller.py#L360-L385)。
+先检查App关闭状态、工作区busy、文本长度和会话是否归档。查询session会await并让出执行权，所以回来后再次检查busy，然后设置执行会话、preparing、起始时间和pending_text。
+
+最后`create_task(_execute(...))`安装外层任务所有权；它不是新线程。pending_text属于Engine内存，用来在Turn尚未接受时展示输入，还不是messages里的规范用户消息。
+
+Controller.send通知视图并返回。HTTP层可以完成202响应，后台则开始执行_execute。下面只沿这个后台Task继续。
+
+## 14. _execute先切会话和准备MCP，然后才调用Runtime.run
+
+源码节选：[src/kaki/app_controller.py:360–365](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/app_controller.py#L360-L365)。
 
 ```python
     async def _execute(self, e: Engine, text, request_id):
         try:
             if e.runtime.session_id != e.session:
                 await e.runtime.switch_session(e.session)
-            # 阅读：MCP 准备发生在 Runtime 接受 Turn 之前。
+            # 阅读：App第一次任务先完成MCP发现；Runtime此时尚未创建这次Turn。
             await e.runtime.ensure_browser()
-            # 阅读：必须等 Runtime.run 返回，才把 phase 改成它的终态。
             result = await e.runtime.run(text, request_id)
-            e.result = e.result or asdict(result)
-            e.phase = result.status
-        except asyncio.CancelledError:
-            await e.runtime.cancel()
-            e.phase = "cancelled"
-            if e.result is None:
-                e.result = {"status": "cancelled", "text": "已停止本轮任务", "stop_reason": "user_cancel"}
-        except Exception as exc:
-            e.phase = "failed"
-            e.result = {
-                "status": "failed",
-                "text": safe_error(exc),
-                "error": safe_error(exc),
-                "stop_reason": "app_error",
-            }
-        finally:
-            e.draft = {}
-            e.pending = ""
-            # 阅读：外层任务解除占用以后，前端才能发送下一轮。
-            e.task = None
-            self.notify(e, reload=True)
 ```
 
-`e.session` 表示当前执行会话；页面当前查看的 `state.sid` 可以不同。`busy` 在外层Task整个生命周期内为真。因此同项目另一会话可以查看但不能竞争发送。不同项目各有独立Runtime，并不代表已经实现了多Agent协作系统。
+如果用户新建或切换到了其他会话，先switch_session核对模型并恢复该会话派生状态；这不等于启动另一Agent。之后await ensure_browser：
 
-### 5.3 Runtime接受请求并创建业务Turn
+源码节选：[src/kaki/runtime.py:125–138](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/runtime.py#L125-L138)。
 
-源码节选：[ src/kaki/runtime.py:179–190 ](https://github.com/anuolxl/kaki_agent/blob/686301bec20ebda7e93b92d41760b29cea40ff00/src/kaki/runtime.py#L179-L190)。
+```python
+    async def ensure_browser(self):
+        """App history opens immediately; MCP initialization is deferred until task execution."""
+        if not self.browser.enabled or self._browser_attempted:
+            return
+        self._browser_attempted = True
+        await self.emit("runtime.status", data={"text": "正在连接Playwright MCP…"})
+        try:
+            await self.tools.connect_browser()
+        except asyncio.CancelledError:
+            self._browser_attempted = False
+            raise
+        except Exception as exc:
+            self.browser_warning = safe_error(exc)
+            await self.emit("runtime.warning", data={"text": "浏览器未连接：" + self.browser_warning})
+```
+
+无browser配置时立即返回；本Runtime此前已经尝试连接过时也不会每轮重新启动。本主线第一次使用已配置浏览器，因此先进入ToolRegistry.connect_browser：
+
+源码节选：[src/kaki/tools.py:196–203](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/tools.py#L196-L203)。
+
+```python
+    async def connect_browser(self):
+        for t in await self.browser.start():
+            name = t["name"]
+
+            async def call(args, ctx, n=name):
+                return await self.browser.call(n, args)
+
+            self.add(Tool(name, t["description"], {}, [], "EXTERNAL", call, schema=t["parameters"]))
+```
+
+这里调用browser.start，首次创建MCP owner Task并等ready Future：
+
+源码节选：[src/kaki/browser_mcp.py:36–42](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/browser_mcp.py#L36-L42)。
+
+```python
+    async def start(self):
+        if not self.enabled:
+            return []
+        if self.task is None:
+            self.ready = asyncio.get_running_loop().create_future()
+            self.task = asyncio.create_task(self._serve(), name="kaki-browser-mcp")
+        return await asyncio.wait_for(asyncio.shield(self.ready), 90)
+```
+
+owner Task执行下面的启动过程：
+
+源码节选：[src/kaki/browser_mcp.py:44–84](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/browser_mcp.py#L44-L84)。
+
+```python
+    async def _serve(self):
+        opt = self.option
+        args = list(opt.args or ["-y", f"@playwright/mcp@{PLAYWRIGHT_VERSION}", "--browser", "chrome"])
+        if "--isolated" not in args and not any(x.startswith("--user-data-dir") for x in args):
+            args += ["--user-data-dir", str(self.workspace.state / "browser-profile")]
+        if not any(x.startswith("--output-dir") for x in args):
+            args += ["--output-dir", str(self.workspace.state / "browser-output")]
+        server = StdioServerParameters(
+            command=opt.command, args=args, env=opt.env or None, cwd=self.workspace.root
+        )
+
+        async def roots(_):
+            return types.ListRootsResult(
+                roots=[types.Root(uri=self.workspace.root.as_uri(), name=self.workspace.root.name)]
+            )
+
+        # 阅读：MCP的stderr单独落盘到这个文件。
+        log = (self.workspace.state / "browser-mcp.log").open("a")
+        try:
+            async with stdio_client(server, errlog=log) as (read, write):
+                async with ClientSession(
+                    read,
+                    write,
+                    read_timeout_seconds=timedelta(seconds=opt.tool_timeout),
+                    list_roots_callback=roots,
+                    client_info=types.Implementation(name="kaki-agent", version=__version__),
+                ) as session:
+                    # 阅读：工具协议握手/发现，不等于执行了页面导航。
+                    await session.initialize()
+                    listing = await session.list_tools()
+                    self.tools = []
+                    for t in listing.tools:
+                        original = t.name
+                        alias = "kaki_browser_" + original.removeprefix("browser_")
+                        self.tools.append(
+                            {
+                                "name": alias,
+                                "original": original,
+                                "description": t.description or original,
+                                "parameters": t.inputSchema or {"type": "object", "properties": {}},
+                            }
+                        )
+                    self.ready.set_result(self.tools)
+```
+
+按顺序准备项目独立profile/output目录参数，打开browser-mcp.log承接stderr，启动stdio子进程，初始化ClientSession，获取工具列表，把原名、别名、description和schema保存下来。ready.set_result解除start的等待，然后connect_browser把这些工具注册到Registry。
+
+**返回路径：** MCP工具列表 → ToolRegistry注册完成 → ensure_browser返回 → _execute继续下一行Runtime.run。
+
+这一步完成的是工具发现，不表示已经执行browser_navigate或打开某个业务网页；真实浏览器进程何时创建由MCP内部实现决定。即使用户只做纯对话，目前App也会先调用ensure_browser，随后才让模型决定是否用工具，没有本地意图分类器来提前跳过这段准备。
+
+MCP连接失败会形成warning，核心本地工具仍可继续；连接准备被取消或会话不兼容时，则可能尚未创建本次Turn。这也是“HTTP已接收，但数据库里还没有该请求”的一个实际边界。
+
+## 15. Runtime.run创建内层Task，取得lease并接受业务Turn
+
+现在执行的是`_execute → await Runtime.run(text, request_id)`。
+
+源码节选：[src/kaki/runtime.py:179–190](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/runtime.py#L179-L190)。
 
 ```python
     def submit(self, text: str, request_id: str | None = None) -> asyncio.Task:
@@ -460,7 +1171,11 @@ async function sendText(text){
         return await self.submit(text, request_id)
 ```
 
-源码节选：[ src/kaki/runtime.py:200–227 ](https://github.com/anuolxl/kaki_agent/blob/686301bec20ebda7e93b92d41760b29cea40ff00/src/kaki/runtime.py#L200-L227)。
+run等待submit返回的内层Task。submit核对Runtime.initialized和是否已有active任务，再把_turn交给事件循环。外层Task覆盖“会话/MCP准备+整个Runtime过程”，内层Task负责这一次业务Turn；两者不等于两个线程。
+
+进入_turn：
+
+源码节选：[src/kaki/runtime.py:200–227](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/runtime.py#L200-L227)。
 
 ```python
         # 阅读：文件级租约还防止另一个 Kaki 进程同时执行此仓库。
@@ -496,9 +1211,9 @@ async function sendText(text){
             history = [m for m in await self.store.run("messages", self.session_id) if m.id != user.id]
 ```
 
-外层Controller先做MCP准备，Runtime随后取得lease并调用accept_turn。此处才创建可持久查询的Turn。因此HTTP已返回202，但若在MCP准备阶段就失败，可能只有App内存错误，数据库里还没有这次Turn；当前没有完整接入访问日志去覆盖这段空白。
+先取得工作区执行lease，防止其他Kaki进程同时操作这个仓库。然后调用Store.accept_turn。真正的新请求持久化在下面的短事务中发生：
 
-源码节选：[ src/kaki/store.py:208–229 ](https://github.com/anuolxl/kaki_agent/blob/686301bec20ebda7e93b92d41760b29cea40ff00/src/kaki/store.py#L208-L229)。
+源码节选：[src/kaki/store.py:208–229](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/store.py#L208-L229)。
 
 ```python
     ) -> tuple[str, Message, bool]:
@@ -526,15 +1241,118 @@ async function sendText(text){
         return turn, message, True
 ```
 
-同一个request_id再次提交时，Store核对session和text是否一致；已经完成的任务返回原TurnResult，不重新执行副作用。新的request_id则表示用户明确发起另一轮任务。
+同一事务保存Turn、用户Message、会话更新时间及turn.started事件。request_id已存在时先比较会话和文本，已完成请求可返回旧结果，不重新执行工具。当前是新ID，因此生成turn_id，Runtime设置active_turn并发出进度事件。
 
-## 6. 上下文准备：SQLite历史怎样变成模型输入
+**到这里才跨过“业务请求已经接受并落库”的边界。** 前面的202、Engine.pending_text、MCP准备完成都不是这个边界。下面的图只展开这次接单涉及的SQL数据往返，不把Store线程误解成远端数据库服务。
 
-### 6.1 原文库、派生状态、当次窗口
 
-三层数据要分别看：`messages` 是规范原文；`context_state` 的manifest/working/plan是派生状态；`AssembledContext.messages` 是本次准备发给模型的窗口。归档或裁剪窗口不是删除数据库消息。
+```mermaid
+sequenceDiagram
+    participant UI as App窗口
+    participant B as Python后台
+    participant W as Store专用线程
+    participant S as SQLite库
+    participant F as 本机文件
+    Note over B,S: 属于同一Kaki进程；Store线程不另起服务
+    UI->>B: C1 HTTP提交text和request_id
+    B->>W: C2 await store.run(operation)
+    W->>S: C3 sqlite3.execute SQL和参数
+    S->>F: D1 写入数据库与WAL事务数据
+    F-->>S: D2 文件I/O结果
+    S-->>W: D3 查询行或提交结果
+    W-->>B: D4 Python对象返回await调用者
+    B-->>UI: D5 HTTP历史或WebSocket状态
+```
 
-源码节选：[ src/kaki/context/engine.py:45–74 ](https://github.com/anuolxl/kaki_agent/blob/686301bec20ebda7e93b92d41760b29cea40ff00/src/kaki/context/engine.py#L45-L74)。
+## 16. Turn落库后，先做before快照，再读取本会话历史
+
+回到_turn的accept_turn下一行。本次新Turn已存在，接着在启用快照时调用capture(turn,"before")：
+
+源码节选：[src/kaki/checkpoint.py:95–119](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/checkpoint.py#L95-L119)。
+
+```python
+    async def capture(self, turn: str, phase: str) -> dict:
+        identity = uid("snap_")
+        metadata = {
+            "root": str(self.workspace.root),
+            "excludes_sha256": hashlib.sha256(EXCLUDES.encode()).hexdigest(),
+        }
+        await self.store.run("snapshot", identity, turn, phase, "creating", None, metadata)
+        try:
+            await self.ensure()
+            # 阅读：操作的是独立 --git-dir 对应的 index；不是用户工作仓的 index。
+            await self.git("add", "-A", "--", ".")
+            _, staged, _ = await self.git("ls-files", "--stage", "-z")
+            # 阅读：遇到 Gitlink 明确警告，不声称包含了嵌套仓文件快照。
+            if any(x.startswith(b"160000 ") for x in staged.split(b"\0") if x):
+                raise KakiError("快照发现嵌套Git单元；v0.1不把Gitlink当文件内容覆盖")
+            rc, head, _ = await self.git("rev-parse", "--verify", "HEAD", check=False)
+            changed, _, _ = await self.git("diff", "--cached", "--quiet", check=False)
+            if rc or changed:
+                await self.git("commit", "--allow-empty", "-m", f"Kaki {turn} [{phase}]")
+                _, head, _ = await self.git("rev-parse", "HEAD")
+                self.commits += 1
+                if self.commits % 50 == 0:
+                    await self.git("gc", "--auto")
+            commit = head.decode().strip()
+            metadata["unchanged"] = not bool(rc or changed)
+            await self.store.run("snapshot", identity, turn, phase, "ready", commit, metadata)
+            return {"id": identity, "commit": commit, "state": "ready", "phase": phase}
+```
+
+capture先保存creating记录，再初始化并更新独立shadow Git，最终写ready/failed。Git命令指定状态目录下的--git-dir，不使用用户仓库的index；遇到嵌套Gitlink会明确警告，不能声称保存了嵌套仓文件。
+
+capture返回后，Runtime保存before引用；失败可发warning并继续。之后才读取当前session的messages，排除刚保存的本轮用户消息，得到history。
+
+至此依次完成了：任务作用域确定 → 用户输入落库 → before快照 → 本轮历史载入。**这些动作都不是在后台刚启动时给未来任务预先完成的。**
+
+## 17. 进入AgentLoop，第一件事是为当前任务assemble上下文
+
+普通任务从_turn进入AgentLoop.run：
+
+源码节选：[src/kaki/loop.py:15–24](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/loop.py#L15-L24)。
+
+```python
+    async def run(
+        self, turn: str, session: str, user: Message, history: list[Message], recovery: str = ""
+    ) -> TurnResult:
+        rt = self.runtime
+        cfg = rt.config.agents.defaults
+        definitions = rt.tools.definitions()
+        # 阅读：有了真实user和history以后才组装本轮上下文。
+        window = await rt.context.assemble(session, history, user, definitions, recovery=recovery)
+        await rt.emit(
+            "context.assembled", turn, window.metadata | {"estimated_tokens": window.estimated_tokens}
+        )
+```
+
+definitions此时包含内置工具和刚发现的MCP工具。接着立即进入ContextEngine.assemble，当前还没走到主while：
+
+源码节选：[src/kaki/context/engine.py:130–146](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/context/engine.py#L130-L146)。
+
+```python
+    async def assemble(
+        self,
+        session: str,
+        history: list[Message],
+        user: Message,
+        tools: list[dict],
+        *,
+        force: bool = False,
+        recovery: str = "",
+    ) -> AssembledContext:
+        system, meta = await self.prefix(user, recovery)
+        budget = self.budget(system, user, tools)
+        if estimate([system, user], tools) > budget.input_limit:
+            raise ContextOverflow(
+                f"当前请求、规则和工具定义本身超出窗口，无法通过删历史解决（允许输入{budget.input_limit}）"
+            )
+        state = await self.store.run("context_get", session)
+```
+
+assemble先调用prefix，进入如下代码：
+
+源码节选：[src/kaki/context/engine.py:45–74](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/context/engine.py#L45-L74)。
 
 ```python
     async def prefix(self, user: Message, recovery: str = "") -> tuple[Message, dict]:
@@ -571,13 +1389,44 @@ async function sendText(text){
         )
 ```
 
-system前缀组合身份约束、目录、仓库规则、本地Skills、显式长期记忆及恢复提示。它们受预算约束，不是无上限地全部加入。当前用户请求始终单独保留，不会因“压缩”被替换成旧摘要。
+这里才用**本次user.content**召回项目记忆、匹配Skills，并读取规则正文；这些任务用gather准备。身份常量在模块加载时已经存在，但完整system前缀直到此处才组合。
 
-默认窗口65536、输出8192时，margin为 `int(65536×2%)=1310`，输入上限为56034；历史可用预算再减规则、工具schema和当前用户请求。最终按完整wire表示估算，不能只数聊天正文。
+Skills.resolve在本机读取SKILL.md，按名称/描述/部分正文做词项相关性排序，或识别显式$技能名、/skill技能名：
 
-### 6.2 快路径、Curator与确定性回退
+源码节选：[src/kaki/context/knowledge.py:129–146](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/context/knowledge.py#L129-L146)。
 
-源码节选：[ src/kaki/context/engine.py:164–190 ](https://github.com/anuolxl/kaki_agent/blob/686301bec20ebda7e93b92d41760b29cea40ff00/src/kaki/context/engine.py#L164-L190)。
+```python
+    def resolve(self, query: str) -> tuple[str, dict]:
+        rows, failures = self.catalog()
+        cfg = self.config.skill_forge
+        always = [r for r in rows if r["always"]][: cfg.always_max]
+        hits = (
+            rank(query, [r["id"] + " " + r["description"] + " " + r["body"][:1800] for r in rows])
+            if cfg.router.enabled
+            else []
+        )
+        explicit = [r for r in rows if "$" + r["id"] in query or "/skill " + r["id"] in query]
+        candidates = [
+            r
+            for r in explicit + [rows[i] for i, s in hits if s >= cfg.router.local_min_score]
+            if r not in always
+        ]
+        candidates = list({r["id"]: r for r in candidates}.values())[: cfg.router.top_k]
+        active = always + (candidates[: cfg.inject_max] if cfg.injection_mode == "full_body" else [])
+        references = [r for r in candidates if r not in active]
+```
+
+这是技能相关性检索，不是先调用一个意图分类模型。Memory同样按当前query从本项目记录中召回。规则可能在Workspace.resolve时为解析继承链接读过一次，此处重新把相关正文组入当前输入；“发现规则路径”和“为当前任务构造Prompt”是两个阶段。
+
+**返回路径：** 规则/记忆/Skills内容 → prefix返回system Message与元数据 → assemble继续计算budget。直到此处才有当前任务的输入预算。
+
+## 18. 在assemble中选择历史，校验预算与工具配对，再返回窗口
+
+默认窗口65536、输出8192时，安全余量为int(65536×2%)=1310，输入上限为56034；历史预算还要扣除system、工具schema和当前用户内容。估算使用tiktoken及wire表示；编码器首次加载也可能发生在这里，不是“后台模型已经预热”。
+
+继续assemble的历史选择部分：
+
+源码节选：[src/kaki/context/engine.py:164–190](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/context/engine.py#L164-L190)。
 
 ```python
         history_tokens = sum(x["tokens"] for x in manifest.values() if isinstance(x, dict) and "tokens" in x)
@@ -611,11 +1460,32 @@ system前缀组合身份约束、目录、仓库规则、本地Skills、显式�
             assembled.metadata.update(path="fallback", **fallback)
 ```
 
-历史较小时走fast；达到可用历史预算60%或显式/compact时启动私有Curator。Curator最多12步、默认30秒，工具仅服务历史/预算/归档/记忆/working state/build，不能借这条路径任意执行本地Shell。它生成的是选择计划，不是面向用户的最终回答。
+新空会话通常走fast；如果这次启动恢复了大量旧历史，首个新任务也可能走Curator。进入Curator时，它才发起独立kind=curator调用：
 
-Curator超时、无效计划或预算不合格则确定性回退：初始保护组+最近历史+相关候选。选中的ID必须存在，工具调用与结果必须闭合；最终仍由Python代码裁剪和验证。
+源码节选：[src/kaki/context/curator.py:139–151](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/context/curator.py#L139-L151)。
 
-源码节选：[ src/kaki/context/engine.py:106–128 ](https://github.com/anuolxl/kaki_agent/blob/686301bec20ebda7e93b92d41760b29cea40ff00/src/kaki/context/engine.py#L106-L128)。
+```python
+        try:
+            async with asyncio.timeout(e.config.context.curator_timeout_seconds):
+                for step in range(1, 13):
+                    if estimate(messages, private_tools) > budget.context_length - 2048 - budget.margin:
+                        return None, {"fallback_reason": "curator_input_limit"}
+                    # 阅读：恢复旧长会话时，这可能先于main调用；它仍由这次任务触发。
+                    response = await e.provider.complete(
+                        messages,
+                        private_tools,
+                        model=e.config.context.curator_model,
+                        max_tokens=min(2048, budget.reserved_output),
+                        turn_id=turn_id,
+                        kind="curator",
+                    )
+```
+
+所以，**收到第一个新任务后的第一次模型调用不一定是main，也可能先是curator；但标准App/TUI没有在用户发任务之前主动调用Curator。** /compact也属于收到请求以后触发的分支。Curator失败则确定性回退，不无限等待。
+
+候选历史和working state进入build_plan，经整组裁剪及最终门：
+
+源码节选：[src/kaki/context/engine.py:106–128](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/context/engine.py#L106-L128)。
 
 ```python
         fixed = replace(system, content=system.content + ("\n\n" + "\n\n".join(extra) if extra else ""))
@@ -645,13 +1515,13 @@ Curator超时、无效计划或预算不合格则确定性回退：初始保护�
         )
 ```
 
-落选原文保存到archive并保留消息来源；`context.assembled`诊断写入JSONL。tiktoken的o200k_base用于本机估算，失败则按UTF8字节近似回退；图片另预留预算。它不是下游模型真实tokenizer的保证。实际计费用量以Provider回传的usage为准。
+缺失ID、工具调用与结果不配对、固定内容本身超限，都不能靠盲目删当前用户请求解决。被省略的原文仍保留在messages及归档；保存context_state和JSONL诊断后，assemble返回AssembledContext。
 
-## 7. 主循环：模型如何决定继续调用工具还是结束
+**返回到调用方：** AgentLoop.run收到window，发context.assembled，初始化本轮计数与工具ctx。下一步才进入主控制while。
 
-### 7.1 AgentLoop是有界的状态推进
+## 19. 进入本次Turn的主控制while，发起一次main模型调用
 
-源码节选：[ src/kaki/loop.py:55–88 ](https://github.com/anuolxl/kaki_agent/blob/686301bec20ebda7e93b92d41760b29cea40ff00/src/kaki/loop.py#L55-L88)。
+源码节选：[src/kaki/loop.py:55–88](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/loop.py#L55-L88)。
 
 ```python
         iteration = 0
@@ -693,139 +1563,13 @@ Curator超时、无效计划或预算不合格则确定性回退：初始保护�
                 raise
 ```
 
-默认maxToolIterations=40。每次迭代前rebalance；模型调用产生ModelResponse。`tool_calls`非空则提交完整响应、执行工具、追加观测并continue；没有工具且有完整正文才走最终回答分支。工具不会自己再次调用主模型，下一次推理由Loop统一发起。
+max_tool_iterations默认40。每次迭代先检查取消，再rebalance，最后调用Provider.complete。rebalance检查的是**当前窗口**，因为工具结果追加后会增长，不是重新启动Runtime。
 
-异常策略也是有界的：上游context_overflow在尚无可见输出时最多应急2次，且不消耗正常迭代次数；空正文、reasoning-only和工具后的空回复有有限恢复；连续同名工具硬失败会给模型提示更换方法；达到迭代上限后关闭工具，用已有证据总结未完成项，不能假装正常完成。
+这就是Agent的推理主循环。它只属于当前Turn；空闲后台不会一遍遍执行这个while。若模型返回工具请求，完成工具观测后才进入下一次迭代；若返回完整最终正文则退出。
 
-### 7.2 commit_model先于工具执行
+现在执行到第70行，按调用顺序进入Provider.complete，先转换wire输入：
 
-源码节选：[ src/kaki/loop.py:89–118 ](https://github.com/anuolxl/kaki_agent/blob/686301bec20ebda7e93b92d41760b29cea40ff00/src/kaki/loop.py#L89-L118)。
-
-```python
-            if response.tool_calls:
-                # 阅读：先将完整模型消息及全部 planned 工具意图同事务落库。
-                message, runs = await rt.store.run("commit_model", session, turn, response)
-                window.messages.append(message)
-                await rt.emit(
-                    "model.committed",
-                    turn,
-                    {
-                        "draft_id": response.call_id,
-                        "message_id": message.id,
-                        "text": response.text,
-                        "tool_count": len(runs),
-                    },
-                )
-                by_call = {r["tool_call_id"]: r for r in runs}
-                observations = {}
-
-                async def started(call):
-                    # 阅读：副作用开始前，running 必须先持久化。
-                    await rt.store.run("mark_running", by_call[call.id]["id"])
-                    await rt.emit(
-                        "tool.started",
-                        turn,
-                        {"tool_call_id": call.id, "name": call.name, "arguments": call.arguments},
-                    )
-
-                async def completed(call, result):
-                    nonlocal failures, tool_count
-                    # Persist each completed observation immediately, even if another safe read is still running.
-                    # 阅读：每个工具完成立即保存结果，不能等整批结束才保存。
-                    observation = await rt.store.run(
-                        "commit_tool", session, turn, by_call[call.id]["id"], result
-                    )
-```
-
-源码节选：[ src/kaki/store.py:243–272 ](https://github.com/anuolxl/kaki_agent/blob/686301bec20ebda7e93b92d41760b29cea40ff00/src/kaki/store.py#L243-L272)。
-
-```python
-    def _commit_model(self, session: str, turn: str, response: ModelResponse) -> tuple[Message, list[dict]]:
-        # 阅读：assistant 消息、工具意图和 model.committed 事件属于同一事务。
-        with self.db:
-            self._assert_active(turn)
-            msg = self._append(
-                session,
-                turn,
-                Message(
-                    "assistant",
-                    response.text,
-                    tool_calls=[asdict(c) for c in response.tool_calls],
-                    native_items=response.native_items,
-                ),
-            )
-            runs = []
-            for call in response.tool_calls:
-                run = {
-                    "id": uid("run_"),
-                    "tool_call_id": call.id,
-                    "name": call.name,
-                    "arguments": call.arguments,
-                }
-                self.db.execute(
-                    "INSERT INTO tool_runs(id,turn_id,tool_call_id,name,arguments,state) VALUES(?,?,?,?,?,?)",
-                    (run["id"], turn, call.id, call.name, dumps(call.arguments), "planned"),
-                )
-                runs.append(run)
-            self._event(
-                session, turn, "model.committed", {"message_id": msg.id, "model_call_id": response.call_id}
-            )
-        return msg, runs
-```
-
-模型返回“调用工具”只是请求，不代表工具已经执行。`commit_model`同事务保存assistant的原生项、所有planned工具及事件，`mark_running`在真实I/O之前提交。崩溃时如果只有planned，知道未开始；如果running但没有结果，只能记UNKNOWN。
-
-### 7.3 实际结果回到模型
-
-源码节选：[ src/kaki/loop.py:134–168 ](https://github.com/anuolxl/kaki_agent/blob/686301bec20ebda7e93b92d41760b29cea40ff00/src/kaki/loop.py#L134-L168)。
-
-```python
-                    await rt.emit(
-                        "tool.finished",
-                        turn,
-                        {
-                            "tool_call_id": call.id,
-                            "name": call.name,
-                            "failed": result.failed,
-                            "preview": result.text[:600],
-                            "artifacts": result.artifacts,
-                            "exit_code": result.exit_code,
-                        },
-                    )
-
-                # 阅读：工具注册表负责实际执行，模型没有直接执行系统命令。
-                results = await rt.tools.execute_many(response.tool_calls, ctx, started, completed)
-                for call, result in zip(response.tool_calls, results, strict=True):
-                    # 阅读：真实观测追加进当前窗口，continue 后交给模型继续判断。
-                    window.messages.append(observations[call.id])
-                    if result.failed and not any(
-                        t in result.text.lower() for t in ["timeout", "timed out", "429", "rate limit"]
-                    ):
-                        hard_count = hard_count + 1 if hard_name == call.name else 1
-                        hard_name = call.name
-                    else:
-                        hard_count = 0
-                        hard_name = None
-                    if hard_count >= 2 and hard_nudges < 2:
-                        from dataclasses import replace
-
-                        window.messages[-1] = replace(
-                            window.messages[-1],
-                            content=window.messages[-1].content
-                            + "\n[Kaki] 同名工具连续硬失败，请分析原因并更换方法。",
-                        )
-                        hard_count = 0
-                        hard_nudges += 1
-                previous_tools = True
-```
-
-每个工具完成就commit_tool，即使同一批另一个只读工具仍在运行。这样后续取消不会抹掉已经完成的观测。窗口按输入工具顺序追加对应tool消息，下一次Provider请求通过call_id交给上游。
-
-## 8. Provider：内部Message如何与Right Code交互
-
-### 8.1 内部协议到Responses协议
-
-源码节选：[ src/kaki/provider.py:26–65 ](https://github.com/anuolxl/kaki_agent/blob/686301bec20ebda7e93b92d41760b29cea40ff00/src/kaki/provider.py#L26-L65)。
+源码节选：[src/kaki/provider.py:26–65](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/provider.py#L26-L65)。
 
 ```python
         elif m.role == "user":
@@ -872,11 +1616,13 @@ def expand_parts(parts, resolver):
                 else {"type": "input_image", "image_url": "artifact://" + p["artifact_id"]}
 ```
 
-system消息合并为instructions；user消息变input_text/图片part；assistant优先使用保存的native_items，保持原始输出顺序；工具结果变function_call_output。模型call_id和本机run_id不同，协议配对靠前者。加密reasoning项被原样保留，不表示Agent能读取模型内部推理过程。
+system变instructions；user变input_text/图片part；assistant优先保留native_items顺序；tool消息变带call_id的function_call_output。内部Message/数据库ID不会因为拼装而变成另一轮任务。
 
-### 8.2 网络请求与有限重试
+## 20. Provider记录网络尝试，然后接收SSE；增量先回到界面
 
-源码节选：[ src/kaki/provider.py:168–194 ](https://github.com/anuolxl/kaki_agent/blob/686301bec20ebda7e93b92d41760b29cea40ff00/src/kaki/provider.py#L168-L194)。
+wire_input返回instructions/items后，Provider构造请求：
+
+源码节选：[src/kaki/provider.py:168–194](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/provider.py#L168-L194)。
 
 ```python
         model = model or self.config.agents.defaults.model
@@ -911,13 +1657,47 @@ system消息合并为instructions；user消息变input_text/图片part；assista
                 "model": model,
 ```
 
-Provider使用AsyncOpenAI客户端、配置apiBase和apiKey，显式关闭SDK隐式重试。这里请求的是Right Code的Responses兼容接口，`openai/`是配置里的命名约定，不意味着走OpenRouter或直连官方OpenAI。
+model从配置的openai/前缀规范化，input、instructions、工具schema、输出上限一同发送。tool_choice默认auto，让模型理解任务并判断是否调用工具；此处没有额外的intent分类阶段。
 
-每次网络尝试生成独立llm_ID，kind=main/curator/finalize并入model_calls。只有未产生可见输出的network/rate_limit/upstream错误才有限退避；可选temperature/include/store被上游明确拒绝时可省略重试。401/403归类authentication，不自动换模型、换平台或轮换密钥。
+每次网络尝试先写model_calls：
 
-### 8.3 流式显示不等于完整响应
+源码节选：[src/kaki/provider.py:185–210](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/provider.py#L185-L210)。
 
-源码节选：[ src/kaki/provider.py:210–249 ](https://github.com/anuolxl/kaki_agent/blob/686301bec20ebda7e93b92d41760b29cea40ff00/src/kaki/provider.py#L210-L249)。
+```python
+        for attempt in range(4):
+            call_id = uid("llm_")
+            started = now()
+            visible = False
+            stream = None
+            record = {
+                "id": call_id,
+                "turn_id": turn_id,
+                "kind": kind,
+                "model": model,
+                "status": "running",
+                "created": started,
+                "metadata": {
+                    "attempt": attempt + 1,
+                    "protocol": "responses",
+                    "omitted_parameters": sorted(self.disabled_parameters),
+                },
+            }
+            if self.record:
+                await self.record(record)
+            # 阅读：先保存这次模型尝试，再发出HTTPS请求。
+            try:
+                active = {k: v for k, v in kwargs.items() if k not in self.disabled_parameters}
+                response = None
+                t0 = time.monotonic()
+                stream = await self.client.responses.create(**active)
+                async for event in stream:
+```
+
+走到responses.create才真正向配置的Right Code接口请求模型。客户端对象早在启动时构造，但真正网络请求现在才发生。标准启动没有自动执行doctor --probe，也没有自动调用embedding或模型缓存预热。
+
+Provider随后消费SSE：
+
+源码节选：[src/kaki/provider.py:210–249](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/provider.py#L210-L249)。
 
 ```python
                 async for event in stream:
@@ -965,13 +1745,213 @@ Provider使用AsyncOpenAI客户端、配置apiBase和apiKey，显式关闭SDK隐
                     await self.record(record)
 ```
 
-SSE delta触发 `model.delta`；完整终事件才normalize为可提交响应。流突然中断、缺少终事件、工具参数不完整，都不能执行半条工具指令。成功保存provider_id、耗时、finish_reason和usage；失败记录错误分类，面向用户的错误经过safe_error处理。
+遇到文本delta时，进入AgentLoop先前定义的on_delta回调：
 
-## 9. Tools与MCP：最终由谁真的修改文件、执行命令
+源码节选：[src/kaki/loop.py:46–53](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/loop.py#L46-L53)。
 
-### 9.1 ToolRegistry是本机执行适配层
+```python
+        async def on_delta(text, call_id):
+            nonlocal draft_last, draft_text
+            draft_text += text
+            rt.partial_text = draft_text
+            await rt.emit("model.delta", turn, {"draft_id": call_id, "text": text})
+            if time.monotonic() - draft_last > 0.7:
+                draft_last = time.monotonic()
+                await rt.store.run("draft", turn, draft_text)
+```
 
-源码节选：[ src/kaki/tools.py:208–237 ](https://github.com/anuolxl/kaki_agent/blob/686301bec20ebda7e93b92d41760b29cea40ff00/src/kaki/tools.py#L208-L237)。
+它更新partial_text，发Runtime事件，并按节流保存草稿。App路径中的事件直接await Controller.observe，合并draft并通知WS队列；writer发送后页面更新。这个过程中还没有提交完整assistant消息，也不会执行半条工具指令。
+
+on_delta返回后，继续Provider的async for。只有完整response.completed/incomplete终事件才调用normalize_response：
+
+源码节选：[src/kaki/provider.py:67–119](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/provider.py#L67-L119)。
+
+```python
+        else:
+            result.append(p)
+    return result
+
+
+def normalize_response(response: Any, call_id: str) -> ModelResponse:
+    data = response.model_dump(exclude_none=True) if hasattr(response, "model_dump") else response
+    native = data.get("output", [])
+    text = []
+    calls = []
+    for item in native:
+        typ = item.get("type")
+        if typ == "message":
+            for part in item.get("content", []):
+                if part.get("type") == "output_text":
+                    text.append(part.get("text", ""))
+                elif part.get("type") == "refusal":
+                    text.append(part.get("refusal", ""))
+        elif typ == "function_call":
+            if not item.get("call_id") or not item.get("name"):
+                raise ProviderError("模型返回缺少call_id/name的工具请求，未执行", "protocol")
+            try:
+                args = json.loads(item.get("arguments") or "{}")
+                if not isinstance(args, dict):
+                    args = {"_raw_arguments": item.get("arguments")}
+            except ValueError:
+                args = {"_raw_arguments": item.get("arguments")}
+            calls.append(ToolCall(item["call_id"], item["name"], args))
+    raw_usage = data.get("usage") or {}
+    usage = {}
+    if raw_usage:
+        a = int(raw_usage.get("input_tokens", 0) or 0)
+        b = int(raw_usage.get("output_tokens", 0) or 0)
+        usage = {
+            "prompt_tokens": a,
+            "completion_tokens": b,
+            "total_tokens": int(raw_usage.get("total_tokens", a + b) or a + b),
+            "cached_tokens": int((raw_usage.get("input_tokens_details") or {}).get("cached_tokens", 0) or 0),
+            "reasoning_tokens": int(
+                (raw_usage.get("output_tokens_details") or {}).get("reasoning_tokens", 0) or 0
+            ),
+        }
+    status = data.get("status") or "completed"
+    if status == "incomplete":
+        finish = (data.get("incomplete_details") or {}).get("reason", "incomplete")
+    elif status == "completed":
+        finish = "completed"
+    else:
+        raise ProviderError("模型响应未成功结束：" + str(status), "response_failed")
+    return ModelResponse(
+        "".join(text), calls, native, usage, finish, data.get("model", ""), call_id, data.get("id", "")
+    )
+
+```
+
+normalize保留原生output，提取正文、函数名称/JSON参数、call_id和usage。cached_tokens只是下游返回的计数，不表示Kaki在这里建立了本地KV缓存；store=False控制Response保存，也不是缓存开关。
+
+完整结果通过校验后，Provider写completed调用记录及耗时，返回ModelResponse给AgentLoop。流中断/截断工具请求会报错，不能执行不完整参数；401/403也不会自动换平台或密钥。
+
+## 21. 回到AgentLoop：先判断tool_calls，再保存完整模型结果
+
+我们现在回到第19步那句await provider.complete之后，response已经是完整ModelResponse：
+
+源码节选：[src/kaki/loop.py:89–103](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/loop.py#L89-L103)。
+
+```python
+            if response.tool_calls:
+                message, runs = await rt.store.run("commit_model", session, turn, response)
+                window.messages.append(message)
+                await rt.emit(
+                    "model.committed",
+                    turn,
+                    {
+                        "draft_id": response.call_id,
+                        "message_id": message.id,
+                        "text": response.text,
+                        "tool_count": len(runs),
+                    },
+                )
+                by_call = {r["tool_call_id"]: r for r in runs}
+                observations = {}
+```
+
+如果模型没有请求工具，按真实分支直接进入第25步的最终正文处理；这不是跳过初始化，而是模型本次不需要工具。
+
+为了继续看完整闭环，本教学路径假设模型请求读取README。它此时只给出了工具名称和参数，尚未读文件。commit_model内部是：
+
+源码节选：[src/kaki/store.py:243–272](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/store.py#L243-L272)。
+
+```python
+    def _commit_model(self, session: str, turn: str, response: ModelResponse) -> tuple[Message, list[dict]]:
+        # 阅读：assistant 消息、工具意图和 model.committed 事件属于同一事务。
+        with self.db:
+            self._assert_active(turn)
+            msg = self._append(
+                session,
+                turn,
+                Message(
+                    "assistant",
+                    response.text,
+                    tool_calls=[asdict(c) for c in response.tool_calls],
+                    native_items=response.native_items,
+                ),
+            )
+            runs = []
+            for call in response.tool_calls:
+                run = {
+                    "id": uid("run_"),
+                    "tool_call_id": call.id,
+                    "name": call.name,
+                    "arguments": call.arguments,
+                }
+                self.db.execute(
+                    "INSERT INTO tool_runs(id,turn_id,tool_call_id,name,arguments,state) VALUES(?,?,?,?,?,?)",
+                    (run["id"], turn, call.id, call.name, dumps(call.arguments), "planned"),
+                )
+                runs.append(run)
+            self._event(
+                session, turn, "model.committed", {"message_id": msg.id, "model_call_id": response.call_id}
+            )
+        return msg, runs
+```
+
+同一短事务保存完整assistant原生项、全部planned工具和model.committed事件，返回run_id映射。模型call_id负责协议配对，本机run_id负责执行追踪，两者不能混用。
+
+Loop接着定义started/completed两个回调，并调用execute_many。**定义回调不执行其中的SQL；实际在Registry运行相应阶段时才进入这些回调。** 下面按实际调用次序继续。
+
+## 22. execute_many先调用started，确认running已提交后再分派工具
+
+进入ToolRegistry.execute_many：
+
+源码节选：[src/kaki/tools.py:252–278](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/tools.py#L252-L278)。
+
+```python
+        async def one(c):
+            await on_start(c)
+            result = await self.execute(c, ctx)
+            await on_complete(c, result)
+            return result
+
+        results = []
+        i = 0
+        while i < len(calls):
+            t = self.tools.get(calls[i].name)
+            if t and t.effect == "READ" and t.safe_read:
+                end = i
+                while end < len(calls):
+                    s = self.tools.get(calls[end].name)
+                    # 阅读：仅标记为安全只读的连续工具最多并发4个，其余串行。
+                    if not s or s.effect != "READ" or not s.safe_read:
+                        break
+                    end += 1
+                for at in range(i, end, 4):
+                    async with asyncio.TaskGroup() as group:
+                        tasks = [group.create_task(one(c)) for c in calls[at : min(at + 4, end)]]
+                    results.extend(task.result() for task in tasks)
+                i = end
+            else:
+                results.append(await one(calls[i]))
+                i += 1
+        return results
+
+```
+
+每个工具的one协程严格按on_start → execute → on_complete执行。连续安全READ最多并发4个，其余串行；这不改变“意图先持久化”的顺序。
+
+现在先进入Loop传来的started：
+
+源码节选：[src/kaki/loop.py:105–111](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/loop.py#L105-L111)。
+
+```python
+                async def started(call):
+                    await rt.store.run("mark_running", by_call[call.id]["id"])
+                    await rt.emit(
+                        "tool.started",
+                        turn,
+                        {"tool_call_id": call.id, "name": call.name, "arguments": call.arguments},
+                    )
+```
+
+Store.mark_running检查planned和活跃Turn，再提交running及started时间。这个状态表示已进入该次执行尝试，不保证底层Shell已经越过参数校验；若此后中断没有结果，必须保守核对现场。
+
+started返回Registry后，才执行self.execute：
+
+源码节选：[src/kaki/tools.py:208–237](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/tools.py#L208-L237)。
 
 ```python
     async def execute(self, call: ToolCall, ctx: dict) -> ToolResult:
@@ -1008,46 +1988,47 @@ SSE delta触发 `model.delta`；完整终事件才normalize为可提交响应。
             )
 ```
 
-工具schema作为模型的function定义；模型返回名称和参数后，Registry用字典找到本地处理器，校验JSON Schema、路径、超时，再执行。`kaki_read/kaki_search/kaki_write/kaki_edit/kaki_exec`等是内置能力；Shell使用当前用户权限，工作区检查不是OS沙箱。
+按名称找到处理器，校验JSON Schema、数值类型等，再带超时调用处理函数。普通错误变failed ToolResult供模型观察；CancelledError继续向上传播。下一步进入本次选中的实际处理器。
 
-源码节选：[ src/kaki/tools.py:252–278 ](https://github.com/anuolxl/kaki_agent/blob/686301bec20ebda7e93b92d41760b29cea40ff00/src/kaki/tools.py#L252-L278)。
+## 23. 处理器执行真实I/O；本地工具与浏览器工具各走自己的通道
+
+当前教学路径是kaki_read，进入read：
+
+源码节选：[src/kaki/tools.py:280–304](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/tools.py#L280-L304)。
 
 ```python
-        async def one(c):
-            await on_start(c)
-            result = await self.execute(c, ctx)
-            await on_complete(c, result)
-            return result
-
-        results = []
-        i = 0
-        while i < len(calls):
-            t = self.tools.get(calls[i].name)
-            if t and t.effect == "READ" and t.safe_read:
-                end = i
-                while end < len(calls):
-                    s = self.tools.get(calls[end].name)
-                    # 阅读：仅标记为安全只读的连续工具最多并发4个，其余串行。
-                    if not s or s.effect != "READ" or not s.safe_read:
-                        break
-                    end += 1
-                for at in range(i, end, 4):
-                    async with asyncio.TaskGroup() as group:
-                        tasks = [group.create_task(one(c)) for c in calls[at : min(at + 4, end)]]
-                    results.extend(task.result() for task in tasks)
-                i = end
-            else:
-                results.append(await one(calls[i]))
-                i += 1
-        return results
-
+        p = self.workspace.path(a["path"])
+        if p.stat().st_size > 8 * 1024 * 1024:
+            raise KakiError("文件超过8 MiB读取上限，请用搜索或Shell按范围查看")
+        raw = await asyncio.to_thread(p.read_bytes)
+        if b"\0" in raw[:8000]:
+            raise KakiError("二进制文件，请使用适合该格式的工具")
+        text = raw.decode("utf-8")
+        lines = text.splitlines()
+        offset = a.get("offset", 1)
+        limit = a.get("limit", 200)
+        body = "\n".join(
+            f"{i + 1}: {line}" for i, line in enumerate(lines) if offset - 1 <= i < offset - 1 + limit
+        )
+        return ToolResult(
+            json.dumps(
+                {
+                    "path": str(p),
+                    "sha256": hashlib.sha256(raw).hexdigest(),
+                    "total_lines": len(lines),
+                    "next_offset": offset + limit if offset - 1 + limit < len(lines) else None,
+                    "text": body,
+                },
+                ensure_ascii=False,
+            )
+        )
 ```
 
-最多4个安全只读工具并发；写文件、Shell、外部浏览器操作等按当前策略串行。ask_user用Future等待人的回答，不受普通工具超时策略约束；它仍属于当前Turn。
+它检查工作区路径和文件大小，通过线程读取字节，拒绝二进制，返回行号、原内容hash、分页信息。到这里文件才被真正读取。后续编辑工具可用hash校验避免覆盖并发修改。
 
-### 9.2 Shell进程、输出与取消
+如果本次实际是Shell分支，则在这里启动进程，而不是在App启动时：
 
-源码节选：[ src/kaki/tools.py:442–462 ](https://github.com/anuolxl/kaki_agent/blob/686301bec20ebda7e93b92d41760b29cea40ff00/src/kaki/tools.py#L442-L462)。
+源码节选：[src/kaki/tools.py:442–462](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/tools.py#L442-L462)。
 
 ```python
         process = await asyncio.create_subprocess_exec(
@@ -1075,7 +2056,7 @@ SSE delta触发 `model.delta`；完整终事件才normalize为可提交响应。
             return b"".join(chunks), discarded
 ```
 
-源码节选：[ src/kaki/tools.py:470–497 ](https://github.com/anuolxl/kaki_agent/blob/686301bec20ebda7e93b92d41760b29cea40ff00/src/kaki/tools.py#L470-L497)。
+源码节选：[src/kaki/tools.py:470–497](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/tools.py#L470-L497)。
 
 ```python
         try:
@@ -1110,53 +2091,11 @@ SSE delta触发 `model.delta`；完整终事件才normalize为可提交响应。
         )
 ```
 
-Shell的stdout/stderr在内存中收集，结束后包装为ToolResult，当前不逐行实时推送终端输出。每个输出流最多捕获8MiB，超出部分计入discarded；不能承诺无限完整保存。超过工具Token展示预算时，已捕获全文移入artifacts，模型和App拿到摘要/引用。
+stdout/stderr完成后才包装为结果，单流最多捕获8MiB；超时/取消结束进程组。较大已捕获输出再由bound转入artifact，不能把App中的摘要当无限完整终端流。
 
-### 9.3 MCP初始化、发现schema、执行调用
+如果模型请求的是kaki_browser_*，Registry会进入第14步注册的call闭包，再到BrowserMcp.call：
 
-源码节选：[ src/kaki/browser_mcp.py:44–74 ](https://github.com/anuolxl/kaki_agent/blob/686301bec20ebda7e93b92d41760b29cea40ff00/src/kaki/browser_mcp.py#L44-L74)。
-
-```python
-    async def _serve(self):
-        opt = self.option
-        args = list(opt.args or ["-y", f"@playwright/mcp@{PLAYWRIGHT_VERSION}", "--browser", "chrome"])
-        if "--isolated" not in args and not any(x.startswith("--user-data-dir") for x in args):
-            # 阅读：每个项目使用独立浏览器 profile。
-            args += ["--user-data-dir", str(self.workspace.state / "browser-profile")]
-        if not any(x.startswith("--output-dir") for x in args):
-            args += ["--output-dir", str(self.workspace.state / "browser-output")]
-        server = StdioServerParameters(
-            command=opt.command, args=args, env=opt.env or None, cwd=self.workspace.root
-        )
-
-        async def roots(_):
-            return types.ListRootsResult(
-                roots=[types.Root(uri=self.workspace.root.as_uri(), name=self.workspace.root.name)]
-            )
-
-        # 阅读：浏览器 MCP 的 stderr 单独追加到 browser-mcp.log。
-        log = (self.workspace.state / "browser-mcp.log").open("a")
-        try:
-            # 阅读：stdio 传 JSON-RPC；与 UI 的 HTTP/WS、SQLite 文件访问是三条不同链路。
-            async with stdio_client(server, errlog=log) as (read, write):
-                async with ClientSession(
-                    read,
-                    write,
-                    read_timeout_seconds=timedelta(seconds=opt.tool_timeout),
-                    list_roots_callback=roots,
-                    client_info=types.Implementation(name="kaki-agent", version=__version__),
-                ) as session:
-                    # 阅读：先 initialize，再 list_tools，把返回 schema 注册给主模型。
-                    await session.initialize()
-                    listing = await session.list_tools()
-                    self.tools = []
-                    for t in listing.tools:
-                        original = t.name
-```
-
-初始化顺序是：启动stdio子进程 → ClientSession.initialize → list_tools → 原schema及description注册到ToolRegistry。模型看到的是 `kaki_browser_*` 别名；实际MCP工具名保存在original字段。
-
-源码节选：[ src/kaki/browser_mcp.py:152–163 ](https://github.com/anuolxl/kaki_agent/blob/686301bec20ebda7e93b92d41760b29cea40ff00/src/kaki/browser_mcp.py#L152-L163)。
+源码节选：[src/kaki/browser_mcp.py:152–163](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/browser_mcp.py#L152-L163)。
 
 ```python
     async def call(self, name: str, arguments: dict) -> ToolResult:
@@ -1175,13 +2114,106 @@ Shell的stdout/stderr在内存中收集，结束后包装为ToolResult，当前�
         return await future
 ```
 
-真正的 `_serve` owner task 从队列取请求，调用session.call_tool，再将TextContent、ImageContent和structuredContent统一转ToolResult。图片正文存为artifact，parts作为后续视觉输入引用。enter/exit ClientSession及AnyIO cancel scope都归同一个owner，避免跨任务关闭会话。
+此时已发现工具名和schema，通常复用同一MCP会话；调用参数经别名映射进入owner队列。owner取到请求后，按如下代码真正call_tool并规范化结果：
 
-本期只接browser这一类MCP；没有通用MCP服务市场或多Agent调度。stdio内部使用JSON-RPC不意味着部署了远端微服务。
+源码节选：[src/kaki/browser_mcp.py:85–128](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/browser_mcp.py#L85-L128)。
 
-### 9.4 工具真实观测的事务边界
+```python
+                    while True:
+                        item = await self.queue.get()
+                        if item is None:
+                            break
+                        name, arguments, future = item
+                        if future.cancelled():
+                            continue
+                        operation = asyncio.create_task(session.call_tool(name, arguments=arguments))
+                        future.add_done_callback(
+                            lambda f, op=operation: op.cancel() if f.cancelled() and not op.done() else None
+                        )
+                        try:
+                            result = await asyncio.wait_for(operation, opt.tool_timeout)
+                            text = []
+                            artifacts = []
+                            parts = []
+                            for block in result.content:
+                                if isinstance(block, types.TextContent):
+                                    text.append(block.text)
+                                elif isinstance(block, types.ImageContent):
+                                    raw = base64.b64decode(block.data, validate=True)
+                                    suffix = ".png" if block.mimeType == "image/png" else ".jpg"
+                                    a = self.workspace.artifact(raw, media_type=block.mimeType, suffix=suffix)
+                                    artifacts.append(a)
+                                    parts.append(
+                                        {
+                                            "type": "input_image",
+                                            "artifact_id": a["artifact_id"],
+                                            "media_type": block.mimeType,
+                                        }
+                                    )
+                                    text.append("[image artifact: " + a["artifact_id"] + "]")
+                                else:
+                                    text.append(block.model_dump_json())
+                            if getattr(result, "structuredContent", None):
+                                text.append(json.dumps(result.structuredContent, ensure_ascii=False))
+                            output = ToolResult(
+                                "\n".join(text) or "(no output)",
+                                failed=bool(result.isError),
+                                artifacts=artifacts,
+                                parts=parts,
+                            )
+                            if not future.done():
+                                future.set_result(output)
+```
 
-源码节选：[ src/kaki/store.py:287–312 ](https://github.com/anuolxl/kaki_agent/blob/686301bec20ebda7e93b92d41760b29cea40ff00/src/kaki/store.py#L287-L312)。
+文本、图片和structuredContent被转成ToolResult；图片保存artifact并给后续视觉输入留下parts。它不是另一个Agent推理循环。ask_user则走等待人的Future，回答仍归当前Turn。
+
+**各分支在此汇合：** 处理器返回ToolResult → execute处理异常/限制展示大小 → 回到execute_many的one，开始on_complete。
+
+## 24. completed保存真实观测，然后Loop继续下一次模型调用
+
+进入Loop的completed回调：
+
+源码节选：[src/kaki/loop.py:113–145](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/loop.py#L113-L145)。
+
+```python
+                async def completed(call, result):
+                    nonlocal failures, tool_count
+                    # Persist each completed observation immediately, even if another safe read is still running.
+                    observation = await rt.store.run(
+                        "commit_tool", session, turn, by_call[call.id]["id"], result
+                    )
+                    observations[call.id] = observation
+                    tool_count += 1
+                    failures += int(result.failed)
+                    if call.name == "kaki_exec" and rt.is_test_command(call.arguments.get("command", "")):
+                        evidence = {
+                            "command": call.arguments["command"],
+                            "cwd": call.arguments.get("working_dir", str(rt.workspace.root)),
+                            "exit_code": result.exit_code,
+                            "artifacts": result.artifacts,
+                            "run_id": by_call[call.id]["id"],
+                        }
+                        verification["commands"].append(evidence)
+                        verification["status"] = (
+                            "passed" if result.exit_code == 0 and not result.failed else "failed"
+                        )
+                    await rt.emit(
+                        "tool.finished",
+                        turn,
+                        {
+                            "tool_call_id": call.id,
+                            "name": call.name,
+                            "failed": result.failed,
+                            "preview": result.text[:600],
+                            "artifacts": result.artifacts,
+                            "exit_code": result.exit_code,
+                        },
+                    )
+```
+
+它立刻commit_tool，不等待同批其他只读工具全部结束。底层事务是：
+
+源码节选：[src/kaki/store.py:287–312](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/store.py#L287-L312)。
 
 ```python
     def _commit_tool(self, session: str, turn: str, run: str, result: ToolResult) -> Message:
@@ -1214,9 +2246,41 @@ Shell的stdout/stderr在内存中收集，结束后包装为ToolResult，当前�
         return msg
 ```
 
-工具行的结果、tool消息和tool.finished同事务提交。工具正文被标记为不可信数据，不能因网页或文件中的文字获得更高指令优先级。完整大输出仍受采集上限约束，最终事实以实际退出码/失败标记/附件为准。
+更新工具行、追加对应tool消息、记录tool.finished一起提交；观测正文按不可信数据包裹，不能提升成用户授权。
 
-图3展开一次含工具调用的模型循环。`C`是控制调用，`D`是返回数据；图中本地文件/Shell由Registry处理，MCP走独立stdio通道。
+completed返回后，execute_many最终按输入顺序返回结果列表。回到Loop这段调用处继续：
+
+源码节选：[src/kaki/loop.py:147–168](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/loop.py#L147-L168)。
+
+```python
+                results = await rt.tools.execute_many(response.tool_calls, ctx, started, completed)
+                for call, result in zip(response.tool_calls, results, strict=True):
+                    window.messages.append(observations[call.id])
+                    if result.failed and not any(
+                        t in result.text.lower() for t in ["timeout", "timed out", "429", "rate limit"]
+                    ):
+                        hard_count = hard_count + 1 if hard_name == call.name else 1
+                        hard_name = call.name
+                    else:
+                        hard_count = 0
+                        hard_name = None
+                    if hard_count >= 2 and hard_nudges < 2:
+                        from dataclasses import replace
+
+                        window.messages[-1] = replace(
+                            window.messages[-1],
+                            content=window.messages[-1].content
+                            + "\n[Kaki] 同名工具连续硬失败，请分析原因并更换方法。",
+                        )
+                        hard_count = 0
+                        hard_nudges += 1
+                previous_tools = True
+```
+
+真实观测进入window.messages，再continue回第19步while顶部，重新检查窗口和预算，向模型发送“前文+这次工具观测”。因此是模型根据实际结果决定下一步，不是工具自己偷偷再请求模型。
+
+如果模型随后要求edit/exec测试，同样再走21–24步；如果给出最终正文，就进入下一步。下图把刚才的这一轮模型/工具往返完整连起来；它从本轮Runtime已启动之后开始，不能当成空闲后台的循环。
+
 
 ```mermaid
 sequenceDiagram
@@ -1252,11 +2316,11 @@ sequenceDiagram
     L-->>R: D8 返回TurnResult等待Runtime收尾
 ```
 
-## 10. 收尾：正文生成完后为什么还显示正在运行
+## 25. 模型给出最终正文：Loop返回TurnResult，但本轮还没完全结束
 
-### 10.1 Loop给出结果，Runtime负责完整结束
+回到某次provider.complete返回之后。如果没有tool_calls，Loop先核对finish_reason与正文。截断响应走interrupted；空正文进入有限恢复；只有完整非空最终回答才执行：
 
-源码节选：[ src/kaki/loop.py:208–218 ](https://github.com/anuolxl/kaki_agent/blob/686301bec20ebda7e93b92d41760b29cea40ff00/src/kaki/loop.py#L208-L218)。
+源码节选：[src/kaki/loop.py:208–218](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/loop.py#L208-L218)。
 
 ```python
                     continue
@@ -1273,7 +2337,13 @@ sequenceDiagram
             )
 ```
 
-源码节选：[ src/kaki/runtime.py:276–300 ](https://github.com/anuolxl/kaki_agent/blob/686301bec20ebda7e93b92d41760b29cea40ff00/src/kaki/runtime.py#L276-L300)。
+完整assistant消息先入库，再返回TurnResult。正文可能从第20步起就通过流式增量可见，因此用户看到文字不再增长，不能据此判断after快照、上下文和终态都已保存。
+
+**返回路径：** AgentLoop.run → Runtime._turn中的result。下面继续执行_turn的finally，不重新启动下一轮任务。
+
+## 26. Runtime按顺序完成after快照、用量、上下文和唯一终态
+
+源码节选：[src/kaki/runtime.py:276–300](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/runtime.py#L276-L300)。
 
 ```python
                     if self.snapshots_enabled and not self.closed:
@@ -1306,9 +2376,46 @@ sequenceDiagram
         return result
 ```
 
-Runtime的正常收尾顺序是：after快照 → 累计所有模型调用usage → 更新working state → finish_turn持久化终态 → turn.finished通知 → 释放lease → Task返回。快照失败可以形成警告而保留模型结果；不能因此宣称存在可恢复快照。
+正常收尾按顺序做：
 
-源码节选：[ src/kaki/app_controller.py:168–201 ](https://github.com/anuolxl/kaki_agent/blob/686301bec20ebda7e93b92d41760b29cea40ff00/src/kaki/app_controller.py#L168-L201)。
+1. 等待after文件快照，保存ready引用或警告；这里只是当前Turn收尾。
+2. 累计本Turn的main/curator/finalize等调用usage；调用缺失usage时记unknown_calls。
+3. 更新working state中的目标、来源ID、未完成线索和last_turn，供下次新任务使用。
+4. finish_turn提交终态、结果、快照引用和结束时间；仍未闭合的执行意图按规则补cancelled/unknown观测。
+5. 发turn.finished，最后释放工作区lease，返回TurnResult。
+
+其中finish_turn的关键事务是：
+
+源码节选：[src/kaki/store.py:336–357](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/store.py#L336-L357)。
+
+```python
+    def _finish_turn(self, result: TurnResult):
+        with self.db:
+            self._assert_active(result.turn_id)
+            self._pending_observations(result.turn_id, reason=result.stop_reason)
+            row = self.db.execute("SELECT session_id FROM turns WHERE id=?", (result.turn_id,)).fetchone()
+            self.db.execute(
+                "UPDATE turns SET status=?,stop_reason=?,error=?,result_json=?,before_snapshot=?,after_snapshot=?,ended=? WHERE id=?",
+                (
+                    result.status,
+                    result.stop_reason,
+                    result.error,
+                    dumps(asdict(result)),
+                    result.before_snapshot,
+                    result.after_snapshot,
+                    now(),
+                    result.turn_id,
+                ),
+            )
+            self.db.execute("UPDATE sessions SET updated=? WHERE id=?", (now(), row["session_id"]))
+            self._event(row["session_id"], result.turn_id, "turn.finished", asdict(result))
+
+    def _recover(self, session: str) -> list[dict]:
+```
+
+Store事务结束后，Runtime才发事件。Controller收到该事件时仍保持finishing，因为Runtime的Task尚在返回链上：
+
+源码节选：[src/kaki/app_controller.py:168–201](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/app_controller.py#L168-L201)。
 
 ```python
             case "model.committed":
@@ -1348,165 +2455,46 @@ Runtime的正常收尾顺序是：after快照 → 累计所有模型调用usage 
             in {"turn.started", "model.committed", "tool.started", "tool.finished", "turn.finished"},
 ```
 
-`model.committed`只表示完整模型消息已入库。`turn.finished`事件发出时Runtime Task仍未返回，Controller保持finishing；只有 `_execute` 的await返回、finally清空Task以后，前端才显示“本轮已完成，可以继续提问”。
+此时lease还可能没有释放，App外层Task也还没有完成。这个约束防止“正文生成完、界面已经可发新任务，但上一次快照/落盘仍在进行”的竞争。
 
-App的WS发送Engine完整状态投影，delta按draft_id合并并约60ms节流。UI收到reload重新GET持久历史；草稿被完整消息替代，工具按tool_call_id去重。慢客户端队列满时发resync；断线显示“状态待确认”，不能当成功结束。
+## 27. _execute的await真正返回，解除busy并让界面显示完成
 
-### 10.2 四个不同的成功语义
+现在回到第14步的_execute，`await e.runtime.run(...)`已经拿到最终结果，继续执行函数后半段：
 
-| 观测 | 真实含义 | 不能推导什么 |
-|---|---|---|
-| HTTP202 | Controller接受调度 | Turn已经落库、模型成功或任务结束 |
-| model.committed | 完整模型输出已保存 | 没有工具、after快照完成或任务成功 |
-| tool_runs.succeeded | 该次工具返回成功观测 | 用户整体需求全部完成 |
-| Turn completed + 外层Task结束 | 该轮正常回答并完成收尾 | 所有测试通过、所有文件可回滚 |
-
-`verification.commands`保留识别出的测试命令、退出码和run_id。当前 `verification.status` 会随最近一次匹配测试命令更新；它不是“所有历史测试都通过”的聚合保证，应逐项检查commands。Agent completed更不等于CI通过。
-
-## 11. 长任务期间的窗口管理、快照和恢复
-
-### 11.1 一次Turn内部也会重平衡
-
-源码节选：[ src/kaki/context/engine.py:212–247 ](https://github.com/anuolxl/kaki_agent/blob/686301bec20ebda7e93b92d41760b29cea40ff00/src/kaki/context/engine.py#L212-L247)。
+源码节选：[src/kaki/app_controller.py:366–385](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/app_controller.py#L366-L385)。
 
 ```python
-    async def rebalance(self, session: str, window: AssembledContext, tools: list[dict]) -> AssembledContext:
-        if estimate(window.messages, tools) <= window.budget.input_limit:
-            assert_window(window.messages, tools, window.budget.input_limit)
-            return window
-        messages = window.messages
-        original = messages[:]
-        # First retain complete user turns when removing older, non-protected historical context.
-        system = messages[0]
-        user_index = max(i for i, m in enumerate(messages) if m.role == "user")
-        history = messages[1:user_index]
-        tail = messages[user_index:]
-        protected = {m.id for g in self.protected_groups(history) for m in g}
-        # 阅读：先去掉不受保护的旧用户组。
-        while estimate([system, *history, *tail], tools) > window.budget.input_limit:
-            drop = next((g for g in groups(history) if not any(m.id in protected for m in g)), None)
-            if not drop:
-                break
-            removed = {m.id for m in drop}
-            history = [m for m in history if m.id not in removed]
-        messages = [system, *history, *tail]
-        # 阅读：再省略旧工具正文；数据库里的原文仍保留。
-        messages, elided = shrink_tool_text(messages, 3)
-        if estimate(messages, tools) > window.budget.input_limit:
-            # Archive complete earlier model/tool exchanges within the active Turn, never one side of a call.
-            start = max(i for i, m in enumerate(messages) if m.role == "user")
-            prefix = messages[: start + 1]
-            exchanges = []
-            for m in messages[start + 1 :]:
-                if m.role == "assistant" or not exchanges:
-                    exchanges.append([])
-                exchanges[-1].append(m)
-            while (
-                len(exchanges) > 1
-                and estimate([*prefix, *(m for g in exchanges for m in g)], tools) > window.budget.input_limit
-            ):
-                exchanges.pop(0)
-            messages = [*prefix, *(m for g in exchanges for m in g)]
-        # 阅读：裁剪后仍必须检查预算和工具协议配对。
-        assert_window(messages, tools, window.budget.input_limit)
+            e.result = e.result or asdict(result)
+            e.phase = result.status
+        except asyncio.CancelledError:
+            await e.runtime.cancel()
+            e.phase = "cancelled"
+            if e.result is None:
+                e.result = {"status": "cancelled", "text": "已停止本轮任务", "stop_reason": "user_cancel"}
+        except Exception as exc:
+            e.phase = "failed"
+            e.result = {
+                "status": "failed",
+                "text": safe_error(exc),
+                "error": safe_error(exc),
+                "stop_reason": "app_error",
+            }
+        finally:
+            e.draft = {}
+            e.pending = ""
+            # 阅读：清空的是外层Task；它覆盖了准备、内核执行和收尾的整个过程。
+            e.task = None
+            self.notify(e, reload=True)
 ```
 
-工具输出不断增加时，rebalance先裁掉不受保护的旧用户组，再省略旧工具正文；仍超限则移除完整旧模型/工具exchange。当前用户输入和工具配对必须保留。去掉的事实仍在messages和归档中；最终门仍不通过就明确报错。
+它设置终态phase，清理草稿和pending_text，清空外层Task，再通知视图重新读取持久历史。Engine.task=None后busy=False，页面才显示“本轮已完成，可以继续提问”。Runtime.active可以仍引用一个已经done的Task，不代表它仍在执行。
 
-### 11.2 文件快照是什么
+后台仍然存在：serve继续等待退出事件，HTTP/WS继续服务，Provider客户端和MCP会话可以复用。下一次新任务不会重做整个App启动，但会重新接受Turn、生成当前窗口，并按策略做before/after快照。
 
-源码节选：[ src/kaki/checkpoint.py:95–119 ](https://github.com/anuolxl/kaki_agent/blob/686301bec20ebda7e93b92d41760b29cea40ff00/src/kaki/checkpoint.py#L95-L119)。
+因此要区分：HTTP202=接收调度；model.committed=完整模型消息已保存；tool succeeded=单次工具成功；Turn completed且外层Task结束=本轮完成。它们都不自动证明所有测试或CI通过。当前verification.status随最近一次识别出的测试命令更新，应逐项看verification.commands及退出码。
 
-```python
-    async def capture(self, turn: str, phase: str) -> dict:
-        identity = uid("snap_")
-        metadata = {
-            "root": str(self.workspace.root),
-            "excludes_sha256": hashlib.sha256(EXCLUDES.encode()).hexdigest(),
-        }
-        await self.store.run("snapshot", identity, turn, phase, "creating", None, metadata)
-        try:
-            await self.ensure()
-            # 阅读：操作的是独立 --git-dir 对应的 index；不是用户工作仓的 index。
-            await self.git("add", "-A", "--", ".")
-            _, staged, _ = await self.git("ls-files", "--stage", "-z")
-            # 阅读：遇到 Gitlink 明确警告，不声称包含了嵌套仓文件快照。
-            if any(x.startswith(b"160000 ") for x in staged.split(b"\0") if x):
-                raise KakiError("快照发现嵌套Git单元；v0.1不把Gitlink当文件内容覆盖")
-            rc, head, _ = await self.git("rev-parse", "--verify", "HEAD", check=False)
-            changed, _, _ = await self.git("diff", "--cached", "--quiet", check=False)
-            if rc or changed:
-                await self.git("commit", "--allow-empty", "-m", f"Kaki {turn} [{phase}]")
-                _, head, _ = await self.git("rev-parse", "HEAD")
-                self.commits += 1
-                if self.commits % 50 == 0:
-                    await self.git("gc", "--auto")
-            commit = head.decode().strip()
-            metadata["unchanged"] = not bool(rc or changed)
-            await self.store.run("snapshot", identity, turn, phase, "ready", commit, metadata)
-            return {"id": identity, "commit": commit, "state": "ready", "phase": phase}
-```
+下面的收尾图对应25–27步。它把普通停止本轮与退出程序分开：普通停止会收尾并保留App；退出先标closed，不再启动新的after快照，再关闭MCP、Provider和Store。
 
-Checkpoint的所有Git调用明确指定状态目录下的 `--git-dir` 和目标 `--work-tree`，关闭用户hooks、filters和文本转换。它保存文件字节和模式，不能代表浏览器/网络事务。遇到嵌套Gitlink会警告，不能说已经对嵌套仓内容做了完整快照。
-
-人工恢复仍在TUI的/undo预览中，需确认路径；应用前再次检查当前内容与Git模式是否仍符合结束快照，避免覆盖后续用户修改。App本期尚无图形化diff/恢复审批页面。
-
-### 11.3 正常停止、程序退出、进程中断
-
-源码节选：[ src/kaki/runtime.py:327–341 ](https://github.com/anuolxl/kaki_agent/blob/686301bec20ebda7e93b92d41760b29cea40ff00/src/kaki/runtime.py#L327-L341)。
-
-```python
-    async def cancel(self):
-        if self.active and not self.active.done():
-            self.active.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self.active
-
-    async def close(self):
-        if self.closed:
-            return
-        # 阅读：先标记进程关闭，避免取消后又启动新的 after 快照。
-        self.closed = True
-        await self.cancel()
-        await self.browser.close()
-        if self.provider and hasattr(self.provider, "close"):
-            await self.provider.close()
-        await self.store.close()
-```
-
-“停止本轮”调用Controller.stop，取消活跃Runtime任务后等待其正常收尾，App仍可继续对话。“退出App”或原生关闭/终端SIGINT先标记closed，再取消任务并关闭MCP、Provider和Store；退出路径不再启动新的after快照。
-
-macOS原生层还需读desktop.py的closing/monitor/install_cocoa_signals：pywebview默认Mach SIGINT可能直接terminate Cocoa，因此Kaki在run loop中安装自己的处理，先让后台done，再关闭窗口。Ctrl+C进程退出码130，正常退出0。浏览器关标签仅断开视图，不结束后台；页面快捷键可能被宿主拦截，以退出按钮或终端SIGINT为准。
-
-源码节选：[ src/kaki/store.py:359–377 ](https://github.com/anuolxl/kaki_agent/blob/686301bec20ebda7e93b92d41760b29cea40ff00/src/kaki/store.py#L359-L377)。
-
-```python
-        recovered = []
-        with self.db:
-            rows = self.db.execute(
-                "SELECT * FROM turns WHERE session_id=? AND status IN ('queued','running','waiting_user')",
-                (session,),
-            ).fetchall()
-            for row in rows:
-                # 阅读：原先正在执行的副作用只能判 UNKNOWN，不能宣称失败后随便重试。
-                self._pending_observations(row["id"], reason="上次进程退出")
-                self.db.execute(
-                    "UPDATE model_calls SET status='interrupted',ended=? WHERE turn_id=? AND status='running'",
-                    (now(), row["id"]),
-                )
-                self.db.execute(
-                    # 阅读：遗留活跃 Turn 标记 interrupted/process_exit。
-                    "UPDATE turns SET status='interrupted',stop_reason='process_exit',ended=? WHERE id=?",
-                    (now(), row["id"]),
-                )
-                self._event(session, row["id"], "turn.recovered", {"reason": "process_exit"})
-                recovered.append(dict(row))
-        return recovered
-```
-
-异常进程结束后：planned→cancelled，running→unknown，活跃Turn→interrupted/process_exit。Recovery生成下一轮可读的恢复提示，不自动继续未知副作用。SQLite能保证自己的短事务一致性，但无法知道被强杀时某条远端操作究竟有没有完成。
-
-图4把“正文完成”“任务完成”和“窗口退出”分开，避免把某个界面信号当全部执行已经结束。
 
 ```mermaid
 sequenceDiagram
@@ -1536,126 +2524,369 @@ sequenceDiagram
     end
 ```
 
-## 12. TUI和headless入口与App有什么关系
+## 28. 将“启动前、待命时、接单后”逐项对齐
 
-| 入口 | 前端接单方式 | 共用部分 |
-|---|---|---|
-| kaki-agent / kaki-app | WebKit页面 → HTTP/WS → Controller | Runtime及下面所有内核模块 |
-| kaki-agent -C /path/to/repo tui | Textual Input → submit_text；ask_user走answer，普通任务走Runtime | 同一Store、Provider、Loop、Tools、Context和Checkpoint |
-| kaki-agent -C /path/to/repo run -m '任务' | CLI读取参数 → Runtime.initialize/run | 同一内核；默认interactive=False |
-| doctor / sessions | 诊断或直接查询 | 不等于一次完整用户Turn |
+到这里默认App主线已经从命令完整走到第一次任务结束。再用这张表核对发生时机，避免把对象构造当实际执行。App列均指**已经成功打开工作区**；无工作区时还没有对应Runtime/Store。
 
-默认checkpoint.policy=interactive包括App/TUI；headless run需要always才自动快照。旧介绍里的“无子命令默认TUI”和“Ctrl+C只取消任务”属于v0.1历史；当前默认App、TUI显式tui、Ctrl+C退出整个进程。
+| 工作 | 默认App首任务前 | 默认App收到任务后 | TUI首任务前 |
+|---|---|---|---|
+| 加载Kaki Python依赖和配置 | 已完成；uv安装/启动器准备与Runtime分开 | 不每轮重新安装 | 已完成 |
+| 读取Git根、规则入口、写workspace.json | 已完成 | 使用该工作区；不自动遍历全仓 | 已完成 |
+| 规则文档的继承链接发现 | 已读相关入口以解析链接 | prefix再读取正文并组合 | 已发现 |
+| 创建SQLite连接/迁移表结构 | 已完成 | 复用连接线程 | 已完成 |
+| 创建/恢复session及中断状态 | 已完成；不重放旧操作 | 切会话时可再核对 | 已完成 |
+| 读取旧context_state.plan | 已完成 | 重新计算本轮窗口 | 已完成 |
+| 构造Provider、Context、Registry对象 | 已完成 | 复用对象 | 已完成 |
+| 检查配置里的Key非空、地址形式 | 打开Runtime时本地校验 | 真实请求才知道远端是否接受 | 终端入口先校验 |
+| 向Right Code发认证/推理请求 | 没有 | Provider.complete才发生 | 没有 |
+| 构造内置工具schema和处理器引用 | 已完成；不等于执行 | 供模型选择和Registry分派 | 已完成 |
+| 启动MCP并initialize/list_tools | 延迟 | 首次ensure_browser时发生 | 默认初始化时已做；关闭配置则不做 |
+| 导航业务网页、读写代码、运行Shell | 没有 | 模型请求工具后才做 | 没有自动执行这些业务操作 |
+| 在界面显示历史/订阅状态 | 已完成 | 按事件继续刷新 | consume_events和定时刷新已启动 |
+| 新建/重命名/归档会话 | 用户可在首任务前操作 | 仍可按状态约束操作 | 有对应TUI命令 |
+| 当前任务的用户Message/Turn | 尚无新Turn | accept_turn事务才创建 | 尚无新Turn |
+| 当前任务的before/after快照 | 没有 | 本轮策略决定是否捕获 | 没有 |
+| 按当前输入匹配Skills和召回记忆 | 没有当前query，不做此匹配 | ContextEngine.prefix执行 | 没有当前query |
+| tokenizer预算估算/窗口选择/Curator | 没有本轮窗口，不主动运行 | assemble/rebalance按需执行 | 不主动运行 |
+| 本地embedding/向量索引或缓存预热 | 无对应启动流程 | 当前也没有独立embedding/KV缓存模块 | 同样没有 |
+| AgentLoop的while | 没进入 | 每个Turn按需进入，默认最多40次正常迭代 | 没进入 |
 
-## 13. 怎样按代码和日志核对一次请求
+“后台运行”至少包含三类不同循环：
 
-### 13.1 日志落点和边界
+- asyncio事件循环：服务I/O、定时器和协程调度，App启动后持续存在。
+- 视图消费循环：App的WS writer或TUI的consume_events，无消息时await队列；不向模型发新请求。
+- AgentLoop.run：收到业务Turn才执行的有界推理/工具循环，返回后不空转等待下一条任务。
 
-| 需要定位的问题 | 读取位置 | 当前边界 |
-|---|---|---|
-| 用户任务是否被Runtime接受 | turns + events.turn.started | MCP准备或鉴权失败可能尚无Turn |
-| 模型为什么失败、用了多少Token | turns.error、model_calls.metadata/usage | 没有完整HTTP报文或SSE逐帧归档 |
-| 工具是否真的开始与结束 | tool_runs的state/started/ended/result_json | running中断只能判unknown |
-| Shell输出 | ToolResult.text和artifacts引用 | 完成后落库，单流8MiB上限，无逐行实时终端流 |
-| 浏览器MCP进程报错 | 项目状态目录/browser-mcp.log | 这是MCP stderr，不是全量工具执行流水 |
-| 上下文为什么省略某段 | context/traces/session/turn.jsonl | 保存规划与选择诊断，不是所有UI事件 |
-| App启动/未捕获异常 | 启动终端stdout/stderr，需自行重定向 | 默认没有统一app.log，HTTP access_log被关闭 |
+App实例锁长期保留；工作区执行lease在恢复和执行Turn等需要独占的阶段取得，不是整个待命期间一直占住。历史已经显示、Queue任务还活着、线程仍运行，都不等于大模型正在计算。
 
-纠正一个容易混淆的点：MCP显式用errlog写browser-mcp.log，因此把App的stderr重定向到app.log，不会把MCP这一路自动汇总进去。SQLite的WAL更不是这两类文本日志。
+## 29. 再从头走一遍TUI启动，避免与默认App混讲
 
-### 13.2 只读查询当前项目，按turn_id串联
-
-以下是本机media_platform的已确认状态路径。其他机器或仓库先从workspace.json找到对应目录；设置KAKI_HOME时根目录不同。变量仅为当前Shell查询辅助，不是新配置项。
+下面单独追踪：
 
 ```bash
-kaki_log_dir="$HOME/.kaki/projects/byteview-mp-media_platform-d43b352d573e14cd"
-kaki_log_db="$kaki_log_dir/kaki.sqlite3"
+kaki-agent -C /path/to/single-git-repo tui
+```
+
+### T01. CLI选择tui子命令，先准备配置和工作区
+
+源码节选：[src/kaki/cli.py:72–82](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/cli.py#L72-L82)。
+
+```python
+@app.command("tui")
+def terminal_ui(ctx: typer.Context):
+    """终端界面：Ctrl+C退出整个进程，停止按钮仅停止本轮任务。"""
+    options = load_config(ctx.obj["config"], model=ctx.obj["model"])
+    options.validate_credentials()
+    workspace = Workspace.resolve(ctx.obj["cwd"], options)
+    from kaki.tui import KakiApp
+
+    ui = KakiApp(Runtime(workspace, options), resume=ctx.obj["resume"])
+    ui.run()
+    raise typer.Exit(ui.return_code)
+```
+
+entry发现有子命令后返回，Typer调用terminal_ui。它加载配置、进行本地凭据校验、解析Workspace，再先构造Runtime，最后构造KakiApp。没有调用desktop.launch、AppServer或原生WebKit。
+
+### T02. KakiApp保存Runtime，创建队列和界面状态
+
+源码节选：[src/kaki/tui.py:69–87](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/tui.py#L69-L87)。
+
+```python
+    ]
+
+    def __init__(self, runtime, resume: str | None = None, **kwargs):
+        kwargs.setdefault("ansi_color", False)
+        super().__init__(**kwargs)
+        self.runtime = runtime
+        self.resume = resume
+        self.event_queue = asyncio.Queue(maxsize=512)
+        self.bubbles = {}
+        self.pending = {}
+        self.question_id = None
+        self.ready_event = asyncio.Event()
+        self.turn_done = asyncio.Event()
+        self.last_result = None
+        self.current_estimate = 0
+        self._consumer = None
+        self._kaki_quitting = False
+        self.undo_plan = None
+        self.runtime.listeners.append(self.enqueue)
+```
+
+self是当前KakiApp实例。event_queue属于这个界面实例，Runtime.listeners追加的enqueue把进度事件放进这个队列。ready_event、turn_done是协程之间的同步标记，不是线程或子Agent。
+
+随后ui.run进入Textual框架事件循环，compose创建控件。发送按钮初始disabled=True，状态显示正在初始化，不提前宣称就绪。
+
+### T03. 挂载界面后执行on_mount的三行注册
+
+源码节选：[src/kaki/tui.py:102–123](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/tui.py#L102-L123)。
+
+```python
+    async def enqueue(self, event: Event):
+        await self.event_queue.put(event)
+
+    async def on_mount(self):
+        # 阅读：把长期消费者交给当前事件循环，不在这里等待它永久结束。
+        self._consumer = asyncio.create_task(self.consume_events())
+        # 阅读：传入绑定方法，定时器之后再调用；这不是直接调用flush_tokens。
+        self.set_interval(0.06, self.flush_tokens)
+        self.initialize_runtime()
+
+    # 阅读：@work会创建Textual管理的Worker，所以调用处不写await。
+    @work
+    async def initialize_runtime(self):
+        try:
+            await self.runtime.initialize(self.resume)
+            await self.load_history()
+            self.header_update()
+            self.query_one("#status", Static).update("就绪 · Enter发送 · 停止按钮仅停止本轮 · Ctrl+C退出程序")
+            self.query_one("#prompt", Input).focus()
+            self.phase("idle", "○ 已就绪 · 可发送任务")
+            self.ready_event.set()
+        except Exception as exc:
+            self.query_one("#status", Static).update("初始化失败：" + safe_error(exc))
+            self.query_one("#tools", RichLog).write(safe_error(exc))
+            self.ready_event.set()
+```
+
+这三行有明确次序：
+
+1. 调用consume_events先得到协程对象，create_task将其交给当前循环调度，把Task句柄保存在self._consumer；on_mount不等待这个长期循环结束。
+2. 注册约0.06秒的定时刷新回调。self.flush_tokens没有括号，传的是绑定方法，之后才由定时器调用。
+3. 调用被@work包装的initialize_runtime，创建Textual管理的异步Worker。它不是普通async函数的裸调用，因此调用处不写await。
+
+on_mount本身没有await也合法；它很快返回，让框架继续处理挂载与输入。async声明不会自动创建线程，create_task和@work在这里安排的是协程任务。
+
+### T04. 消费者开始等事件；Worker进入Runtime.initialize
+
+消费者的等待位置是：
+
+源码节选：[src/kaki/tui.py:153–166](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/tui.py#L153-L166)。
+
+```python
+    async def consume_events(self):
+        try:
+            while True:
+                event = await self.event_queue.get()
+                d = event.data
+                if event.type == "runtime.status":
+                    self.query_one("#status", Static).update(d["text"])
+                elif event.type == "runtime.ready":
+                    if d.get("browser_warning"):
+                        self.query_one("#tools", RichLog).write("浏览器未连接：" + d["browser_warning"])
+                    else:
+                        self.query_one("#tools", RichLog).write(
+                            f"Playwright MCP：{d.get('browser_tools', 0)}个浏览器工具"
+                        )
+```
+
+队列为空时，await只暂停消费者协程，事件循环仍可运行初始化Worker、定时器等；没有事件不会触发一次模型调用。
+
+与此同时，Worker执行`await self.runtime.initialize(self.resume)`。同样依次打开Store、创建Provider/Context/Registry、恢复或新建会话。区别在于这里没有显式connect_browser=False，因此使用默认True，在runtime.ready之前就执行ensure_browser和MCP工具发现。
+
+### T05. Worker等待初始化完成，才载入历史并开放发送
+
+Runtime.initialize返回后，下一句await load_history才执行：
+
+源码节选：[src/kaki/tui.py:139–151](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/tui.py#L139-L151)。
+
+```python
+    async def load_history(self):
+        self.bubbles = {}
+        self.pending = {}
+        await self.query_one("#chat", VerticalScroll).remove_children()
+        if not self.runtime.session_id:
+            return
+        for message in await self.runtime.store.run("messages", self.runtime.session_id):
+            if message.role in ("user", "assistant") and message.content:
+                await self.bubble(str(message.id), message.role, message.content)
+        if self.runtime.recovery_plan.get("items"):
+            self.query_one("#tools", RichLog).write(
+                "已恢复会话；上次中断/未知操作将作为下一任务的核验线索，不自动重放。"
+            )
+```
+
+它读取消息并绘制user/assistant正文，显示恢复提示，再回到Worker更新标题、焦点、idle状态和ready_event。
+
+注意失败分支也设置ready_event，这表示“初始化尝试结束”，不保证成功。判断可用还需结合Runtime.initialized、错误状态和发送按钮。MCP失败被降级为warning时，内核仍可能就绪；这也不表示浏览器工具一定可用。
+
+定时刷新此时已经注册，但没有增量时pending为空，不会自己生产模型输出：
+
+源码节选：[src/kaki/tui.py:240–250](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/tui.py#L240-L250)。
+
+```python
+            self.turn_done.set()
+
+    async def flush_tokens(self):
+        pending = self.pending
+        self.pending = {}
+        for key, text in pending.items():
+            if key in self.bubbles:
+                self.bubbles[key].append(text)
+            else:
+                await self.bubble(key, "assistant", text)
+        if pending:
+```
+
+### T06. 等待用户：TUI此时已有MCP，但仍无新任务和模型调用
+
+在启用MCP且初始化成功的正常情况下，此时消费者Task等待queue，Worker已完成，定时器继续工作；新Turn=0、模型调用=0。MCP stderr文件可能已经创建，但业务网页导航、文件改写和Shell执行仍未自动发生。
+
+这与App的延迟MCP不同。不能把这段on_mount当作默认桌面App启动代码；两种前端只是在Runtime及下面的内核汇合。
+
+### T07. 用户按Enter后，输入转入submit_text
+
+源码节选：[src/kaki/tui.py:280–310](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/tui.py#L280-L310)。
+
+```python
+    async def submit_text(self, text: str):
+        try:
+            if self.question_id:
+                identity = self.question_id
+                self.question_id = None
+                await self.runtime.answer(identity, text)
+                return
+            if self.undo_plan is not None:
+                plan = self.undo_plan
+                self.undo_plan = None
+                if text.strip().upper() == "RESTORE":
+                    self.runtime.lease.acquire()
+                    try:
+                        r = await self.runtime.checkpoint.apply(
+                            plan, [x["path"] for x in plan["paths"] if not x["conflict"]]
+                        )
+                    finally:
+                        self.runtime.lease.release()
+                    await self.bubble(
+                        "restore-" + str(len(self.bubbles)), "assistant", json.dumps(r, ensure_ascii=False)
+                    )
+                else:
+                    self.query_one("#tools", RichLog).write("已放弃恢复")
+                return
+            if text.startswith("/") and text != "/compact":
+                await self.command(text)
+                return
+            self.turn_done.clear()
+            self.last_result = None
+            task = self.runtime.submit(text)
+            self.watch_turn(task)
+```
+
+按实际分支，先判断是否回答现有question，再判断是否在确认undo，再处理斜杠命令。普通新任务才调用runtime.submit并交给watch_turn观察。/compact保留给Runtime处理，不走普通TUI命令分支。
+
+### T08. Runtime执行本轮，Textual Worker等结果，消费者继续更新界面
+
+源码节选：[src/kaki/tui.py:316–324](https://github.com/anuolxl/kaki_agent/blob/1ff09528f79a1cfc5ebc674594e8f2fe5e92468c/src/kaki/tui.py#L316-L324)。
+
+```python
+    @work
+    async def watch_turn(self, task):
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            self.query_one("#status", Static).update(safe_error(exc))
+            self.turn_done.set()
+```
+
+普通任务后续的完整次序为：submit创建_turn Task → 取得lease → accept_turn保存请求 → before快照 → 读取历史 → Context.assemble → AgentLoop有界while → Provider请求与SSE → 工具意图/执行/观测回传 → 最终TurnResult → after快照/working state/终态 → 释放lease。
+
+这与前面App主线15–27步使用的是同一份Runtime及内核代码。不同的是进度返回通道：Runtime.emit → enqueue → event_queue → consume_events → pending缓冲 → flush_tokens/控件更新；不是HTTP/WS。这里已按调用顺序列出整条链，阅读TUI时不需要在不同模块章节之间反复拼接。
+
+## 30. 按顺序定位异常和特殊分支，不扩大“已就绪/已完成”的含义
+
+| 发生的位置 | 实际含义 / 后续行为 |
+|---|---|
+| launch发现已有实例 | 复用原App，可能打开项目；不另起后台，也不让新参数自动替换旧实例的模型配置 |
+| 未指定有效项目 | 可以先出现项目选择窗口，但还没有对应Runtime；用户打开项目后才准备Store和会话 |
+| 配置格式错误或Key本地为空 | 在相应配置/Provider构造阶段报错；不是上游模型已经调用失败 |
+| AppServer已有端口，但initial_error非空 | 本机服务活着，目标工作区未就绪；不能把health200当全部健康 |
+| NativeService.ready被置位但server为空 | 后台启动失败已唤醒主线程，主线程必须看server/error |
+| TUI ready_event被置位但出现初始化失败 | 初始化尝试结束；不能仅凭event判成功 |
+| App第一次MCP准备阶段失败/取消 | 可能尚无本轮Turn；看界面状态和browser-mcp.log，而不是只查turns |
+| 本次恢复了很长旧历史 | 首次新任务可能先走curator，再main；无新任务时不会主动跑Curator |
+| 模型流没有完整终事件 | 不能执行半条工具请求或把草稿当完整响应 |
+| 工具超时、出错或用户停止 | 保留已完成结果；未闭合执行意图按状态判cancelled/unknown，不自动撤回副作用 |
+| 正文停止增长但phase仍finishing | 仍在after快照、派生上下文或持久化阶段，等待真正Task返回 |
+| App窗口关闭/终端SIGINT | 先停止后台任务并清理，不再启动新的after快照；原生窗口在后台done后退出 |
+
+## 31. 从日志逐步验证上面的时间边界
+
+常用位置仍在每项目Kaki状态目录：
+
+```text
+~/.kaki/projects/<仓库名>-<路径hash>/
+├── workspace.json
+├── kaki.sqlite3
+├── context/traces/<session_id>/<turn_id>.jsonl
+├── context/archive/
+├── artifacts/
+├── browser-mcp.log
+└── checkpoints/kaki-shadow.git/
+```
+
+先查turns是否已经有本次turn_id，再按它查看events、model_calls、tool_runs和messages。没有Turn可能仍在App接收/准备阶段；没有tool_runs也可能只是纯对话；模型调用次数可能因curator、重试或finalize超过一轮。events只保存关键事实，不是每个UI增量。
+
+```bash
+kaki_log_db="$HOME/.kaki/projects/byteview-mp-media_platform-d43b352d573e14cd/kaki.sqlite3"
 sqlite3 -readonly -header -column "$kaki_log_db" "
-SELECT id AS turn_id, session_id, status,
-       datetime(created,'+8 hours') AS started_beijing,
+SELECT id, session_id, status, datetime(created,'+8 hours') AS started_beijing,
        substr(text,1,60) AS request
 FROM turns ORDER BY created DESC LIMIT 10;
 "
 ```
 
-复制目标turn_id后，在同一终端查询；以下ID为占位符。
-
 ```bash
 kaki_turn_id="t_替换成实际ID"
 sqlite3 -readonly -line "$kaki_log_db" <<SQL
-SELECT id,request_id,text,status,stop_reason,error,result_json
-FROM turns WHERE id='$kaki_turn_id';
-SELECT seq,created,type,payload
-FROM events WHERE turn_id='$kaki_turn_id' ORDER BY seq;
-SELECT name,arguments,state,started,ended,result_json
-FROM tool_runs WHERE turn_id='$kaki_turn_id' ORDER BY rowid;
-SELECT id,kind,model,status,usage,metadata
-FROM model_calls WHERE turn_id='$kaki_turn_id' ORDER BY created;
-SELECT seq,role,content
-FROM messages WHERE turn_id='$kaki_turn_id' ORDER BY seq;
+SELECT text,status,stop_reason,error,result_json FROM turns WHERE id='$kaki_turn_id';
+SELECT seq,created,type,payload FROM events WHERE turn_id='$kaki_turn_id' ORDER BY seq;
+SELECT name,arguments,state,started,ended,result_json FROM tool_runs WHERE turn_id='$kaki_turn_id' ORDER BY rowid;
+SELECT id,kind,model,status,usage,metadata FROM model_calls WHERE turn_id='$kaki_turn_id' ORDER BY created;
+SELECT seq,role,content FROM messages WHERE turn_id='$kaki_turn_id' ORDER BY seq;
 SQL
 ```
 
-库内时间为UTC，查询里的+8 hours仅为显示北京时间。没有工具行不代表日志丢失；纯对话本来可能只出现turn.started→model.committed→turn.finished。原生浏览器准备日志与Agent注册工具调用也不是同一类记录。
-
-先用App“退出App”结束已有实例，再记录新启动进程的输出；二次启动只唤起现有进程，不能接管其stdout。
+App正常启动不自动生成统一app.log。需要启动输出/未捕获异常时，先退出已有App再显式重定向；MCP stderr单独写browser-mcp.log，不会被这个重定向自动汇总。
 
 ```bash
 mkdir -p "$HOME/.kaki/logs"
 kaki-agent -C /path/to/repo >> "$HOME/.kaki/logs/app.log" 2>&1
-# 在另一终端查看启动输出和未捕获异常
+# 另一终端
 tail -f "$HOME/.kaki/logs/app.log"
-# 浏览器MCP的stderr单独查看（启用并连接后才有文件）
-tail -f "$kaki_log_dir/browser-mcp.log"
 ```
 
-### 13.3 建议的IDE断点顺序
+本次还在临时Git工作区使用真实AppController/Runtime/Store和Textual挂载流程，注入记录型Provider/MCP替身，核对触发次序。它验证的是本机调度边界，不声称是真实模型、浏览器或原生GUI验收：
 
-使用项目 `.venv/bin/python` 作为解释器，优先以 `python -m kaki -C /path/to/repo app --browser` 调试，减少Cocoa主线程对断点观察的干扰；它与原生窗口共用后台。按以下次序下断点：
+验证使用全新空会话，没有触发Curator；恢复长历史时，首个新请求还可能先增加curator模型调用，不能机械套用下面的一次main调用计数。
 
-1. `AppServer.send`：看收到的text/request_id，确认还没有Turn完成承诺。
-2. `AppController._execute`：看MCP准备和Runtime.run之前的阶段。
-3. `Runtime._turn` / `Store._accept_turn`：看session、lease、生成turn_id及用户消息事务。
-4. `ContextEngine.assemble`：看history、budget、included_ids、path和archive_ref。
-5. `RightCodeProvider.complete`：看wire_input产物、tool schema与终事件，不展开或输出API Key。
-6. `AgentLoop` 的response.tool_calls分支：看模型请求怎样转planned/run_id。
-7. `ToolRegistry.execute` / `BrowserMcp.call`：看真实I/O、参数和结果。
-8. `Store._commit_tool`：确认结果已持久化后再继续模型。
-9. `Runtime._turn` 的finally和 `AppController._execute` 的finally：分别核对终态落盘和busy解除。
+| 观察点 | 模拟模型complete次数 | 模拟MCP start次数 | 新Turn数 |
+|---|---|---|---|
+| App工作区就绪、读取会话后、尚未发任务 | 0 | 0 | 0 |
+| App首次任务执行结束 | 1 | 1 | 1 |
+| TUI挂载、初始化和历史加载完成，尚未发任务 | 0 | 1 | 0 |
 
-如果想在运行中观察这些结构，优先使用独立教学Git仓库，不以修改media_platform作为阅读实验。IDE停住主事件循环时，窗口计时或WS心跳也可能暂停，这不是模型一定卡住的证据。
+记录次序为runtime.ready → user.send → browser.start → turn.started → snapshot.before → context.assembled → model.started → provider.complete → model.committed → snapshot.after → turn.finished。TUI中消费者已活跃、发送按钮已开放，但仍未发模型请求。本验证没有修改业务仓库或调用付费模型。
 
-## 14. 用两个场景把阅读路径串起来
+## 32. 阅读完主线后，再查对象和源码索引
 
-### 14.1 纯对话：介绍你自己，只回答不修改文件
-
-预期分支是：发送→Controller准备→Runtime接受Turn→before快照（启用时）→组装窗口→Provider流式正文→无tool_calls→commit_model→TurnResult→after快照与finish_turn→App显示完成。模型schema里即使有工具，也不代表一定调用过。工具是否执行要看tool_runs，不凭自然语言自述推断。
-
-### 14.2 编码任务：修复一个测试，再review和验证
-
-下面是教学控制流，不是这次文档更新已经执行过的编码任务：
-
-1. 用户提交目标和验收要求，Runtime把请求与session绑定。
-2. Context注入相关仓库规则和Skills；模型返回read/search等function_call。
-3. Store先保存planned，工具读取真实文件，结果逐项提交并回传。
-4. 模型依据原内容返回edit/write；路径与原内容校验通过后才修改。
-5. 模型选择exec运行测试，ToolResult记录退出码、stdout/stderr；失败结果也回模型。
-6. Loop继续“观察→修正→测试”，有界重试；是否review由任务和模型工具行为决定，内核没有独立Reviewer Agent。
-7. 最终正文总结实际改动、验证证据和未完成项；Runtime做快照、保存状态后结束。
-
-“返回最终回答”只是循环分支；“需求验收通过”需要人和真实测试证据。单个工具成功、最后一次测试成功或Turn completed，都不应被扩大成“所有验证都已经通过”。
-
-## 15. 模块职责与当前阅读边界
-
-| 领域 | 唯一主要责任 | 常见误读 |
+| 对象 / 标识 | 在主线哪里首次确定 | 用途 |
 |---|---|---|
-| Desktop / AppServer | 窗口生命周期、本机传输和鉴权 | 把本机端口当SQLite服务或远程微服务 |
-| Controller / UI | 外层任务所有权、会话操作、状态投影 | 把内存phase或HTTP202当持久终态 |
-| Runtime | 工作区lease、恢复、快照、唯一Turn结束 | 把Loop返回正文当已经完成所有收尾 |
-| Loop | 有界推理与工具观测循环 | 认为模型能绕过Registry直接执行本机命令 |
-| Provider | wire转换、HTTPS/SSE、模型调用记录 | 把增量草稿当完整工具指令 |
-| Context | 历史选择、协议闭包、预算门、归档 | 把压缩理解为删除原文，或把预算估算当上游真实Tokenizer |
-| Tools / MCP | 本地与外部I/O适配 | 把owner task当子Agent，把快照当远端事务回滚 |
-| Store / Memory / Checkpoint | 持久事实、显式记忆和文件版本 | 把SQLite当向量库或把WAL当请求日志 |
+| workspace_id / Workspace | 05 | 规范Git根和项目状态隔离 |
+| Store / SQLite连接 | 05–06 | 同进程单连接线程保存事实 |
+| Provider / Context / Registry | 07 | 可复用的依赖对象，不等于已运行任务 |
+| session_id | 08 | 包含多次Turn的一段连续对话 |
+| Engine.task / phase / pending_text | 13 | App外层调度和视图投影 |
+| Runtime.active | 15 | 执行_turn的内层asyncio.Task |
+| request_id / turn_id | 11、15 | 请求幂等与这次业务执行作用域 |
+| Message.id / seq | 15及后续提交 | 稳定消息ID与每会话顺序号，二者不同 |
+| AssembledContext | 17–18 | 当前任务的真实可发送窗口 |
+| ModelResponse / provider_id | 20 | 完整模型输出及上游关联ID |
+| tool_call_id / run_id | 21 | 协议配对ID与本机执行意图ID |
+| ToolResult | 23–24 | 真实工具正文、退出码、失败标志和附件 |
+| TurnResult | 25–27 | 本轮结果、用量、验证记录、快照和终态 |
 
-本次只是源码说明和文档更新，没有更改Agent运行逻辑、数据库结构、模型配置或业务仓库代码。原生App与内核的自动化能力见现有测试；这里新增的验证重点是源码节选与基线逐段一致、链接可定位、图示和正文顺序相符，以及飞书原有资源保留。
+IDE建议沿本章顺序下断点：cli.entry → desktop.launch → AppServer.start → open_workspace → Runtime.initialize → 页面接单 → Controller._execute → Runtime._turn → ContextEngine.assemble → AgentLoop → Provider.complete → Registry → Store.commit_tool → Runtime.finally → Controller.finally。源码固定链接就在每一步，不先要求读者把模块说明记住再回头找调用关系。
+
+SQLite使用方式见[官方serverless说明](https://sqlite.org/serverless.html)和[Python sqlite3文档](https://docs.python.org/3.12/library/sqlite3.html)；WAL旁文件见[SQLite WAL说明](https://sqlite.org/wal.html)。Kaki完整字段/接口以[核心契约](module-spec/core.md)、[App契约](module-spec/app.md)为准，安装操作见[App指南](app-guide.md)。本次只重排和补充讲解，未修改Agent运行逻辑、配置或数据库结构。
