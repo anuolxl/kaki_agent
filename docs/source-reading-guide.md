@@ -1536,9 +1536,9 @@ sequenceDiagram
     A-->>D: D6 会话历史、模型名称和实时状态
 ```
 
-![G06 · App接单、外层Task与公共入口](diagrams/dual-06-app-input.svg)
-
 ### A11. 用户第一次点击发送：页面提交文本和请求ID
+
+![G06 · App接单、外层Task与公共入口](diagrams/dual-06-app-input.svg)
 
 前面已经把App准备到可交互状态。现在才出现一个新的用户任务，例如教学输入“读取README并简要介绍此仓库，不修改文件”。接下来的代码依次处理这一次任务，而不是重新启动整个App。
 
