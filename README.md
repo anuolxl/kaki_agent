@@ -4,7 +4,7 @@ Python 3.12 本地编码 Agent。默认打开简易桌面 App：工作区与会�
 
 当前操作手册与截图：[docs/app-guide.md](docs/app-guide.md)。架构：[docs/architecture.md](docs/architecture.md)。数据与接口契约：[core.md](docs/module-spec/core.md)、[app.md](docs/module-spec/app.md)。[v0.1 内核详解](docs/kaki-agent-guide.md)保留历史源代码摘录。
 
-从源码学习：[SQLite、源码阅读顺序与一次请求全链路](docs/source-reading-guide.md)，按执行顺序连续讲解命令启动、后台待命、首个任务、上下文预算、Responses、工具/MCP与收尾，再单独走TUI链路。
+从源码学习：[SQLite、源码阅读顺序与一次请求全链路](docs/source-reading-guide.md)，分别按顺序讲TUI与App的启动、接单和结果交互，公共Runtime/模型/工具链只展开一次，附函数调用流程图。
 
 ## 安装与本机部署
 
@@ -120,7 +120,7 @@ description: Python 修改和 unittest 验证
 SKILL
 ```
 
-在 TUI 输入 `$python-review 检查当前改动`。Skills 注入是有预算的；不是技能平台下载或可执行插件系统。
+在 TUI 输入 `$python-review 检查当前改动`。当前TUI开头的 `/skill ...` 会被本地命令解析拦截，请使用 `$技能名 ...`；App可以把 `/skill ...` 作为任务文本匹配。Skills 注入是有预算的；不是技能平台下载或可执行插件系统。
 
 ## 状态与恢复
 

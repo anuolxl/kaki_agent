@@ -2,7 +2,7 @@
 
 > 版本说明：本文保留 **v0.1 内核实现和当时的源码摘录**。v0.2 默认入口已改为桌面 App，Ctrl+C 改为退出整个进程，SQLite升级至schema2；下文 TUI 默认入口、退出快捷键和 schema1 的说明只适用于旧版。当前安装/使用请读 [App 操作指南](app-guide.md)，架构与字段请读 [architecture.md](architecture.md)、[核心契约](module-spec/core.md)、[App契约](module-spec/app.md)。既有模型循环、上下文、工具和快照设计继续保留。
 
-> 当前源码阅读入口：[第13章：SQLite、源码阅读与一次请求全链路（v0.2）](source-reading-guide.md)。按默认App的01–27步连续展示源码，再单独走TUI启动链，包含前后时机对照和控制流/数据流图；飞书介绍文档同步增加第13章，旧画板与截图继续保留。
+> 当前源码阅读入口：[第13章：SQLite、源码阅读与一次请求全链路（v0.2）](source-reading-guide.md)。TUI与App各自连续讲启动、接单和交互，公共内核单独合并，新增关键函数调用流程图；飞书介绍文档同步增加第13章，旧画板与截图继续保留。
 
 本文已从实施前技术方案重写为 **Kaki Agent v0.1 当前实现的原理、架构与操作手册**。代码位于 `/Users/bytedance/github/kaki_agent`，Python 3.12，分支 master；代码检查点为 `3e5540d`（本地提交，未推送）。验收发生于 2026-11-10 至 2026-11-11，本篇的现状结论来自实际源码、本地测试、Right Code 接口结果、实际 Textual TUI 及 Playwright MCP。
 
