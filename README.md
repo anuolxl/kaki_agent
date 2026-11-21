@@ -6,6 +6,8 @@ Python 3.12 本地编码 Agent。默认打开简易桌面 App：工作区与会�
 
 从源码学习：[SQLite、源码阅读顺序与一次请求全链路](docs/source-reading-guide.md)，分别按顺序讲TUI与App的启动、接单和结果交互，公共Runtime/模型/工具链只展开一次，附函数调用流程图。
 
+理解核心概念与字段：[数据结构与关系指南](docs/data-structures-guide.md)，按工作区、会话、Turn、上下文、模型/工具和数据库梳理真实类型，附状态图、持有关系图与协议数据流。
+
 ## 安装与本机部署
 
 需要 Git、uv、ripgrep、Node.js/npm，以及 Google Chrome（浏览器 MCP 使用独立 profile）。当前部署路径为 `/Users/bytedance/github/kaki_agent`。
