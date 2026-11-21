@@ -517,6 +517,42 @@ metadata是实际dict，字段取决于路径，不是每次都有所有键。Lo
 
 Curator.state把goals/open_threads/decisions限制为8/12/20条；after_turn还维护至多40个source_ids和最近Turn摘要。这些键是动态字典契约，不是另一个WorkingState数据类。Memory是跨Session的显式项目记忆；working是会话级派生摘要；Archive是完整原文的可校验副本，三者不能互换。
 
+### 06.5 CuratorPayload和Validation：规划输入与可验证输出
+
+Curator有自己的私有Message列表，但复用相同Provider和Message类型。它看到的payload不是主模型完整窗口：先选最近消息、相关候选和保护组，再传摘要索引及全部可选ID，避免为压缩再复制一份无限长正文。
+
+| payload字段 | 真实类型与来源 | 职责 |
+|---|---|---|
+| current_request | str；当前请求限量节选 | 告诉规划器此次要解决什么 |
+| budget | dict；asdict(TokenBudget) | 展示预算基础字段；不含property计算字段 |
+| working_state | dict；context_state.working | 保留未决事项与有效决策 |
+| manifest | list[dict]；候选Message的id/role/turn_id/tokens/snippet/relevance | 让规划器选择真实消息ID，不伪造历史 |
+| all_message_ids | list[int]；全部history消息ID | 提供可引用身份全集，不意味着全部内容已进入私有Prompt |
+
+源码节选：[src/kaki/context/curator.py:115–131](https://github.com/anuolxl/kaki_agent/blob/df419e2ea8eeec2d86be610dc4f5165062cd773b/src/kaki/context/curator.py#L115-L131)。
+
+```python
+        payload = {
+            "current_request": excerpt(user.content, 600),
+            "budget": asdict(budget),
+            "working_state": working,
+            "manifest": [
+                {
+                    "id": m.id,
+                    "role": m.role,
+                    "turn_id": m.turn_id,
+                    "tokens": count_text(m.content),
+                    "snippet": excerpt(m.content, 120),
+                    "relevance": manifest.get(str(m.id), {}).get("relevance", 0.5),
+                }
+                for m in sorted(selected.values(), key=lambda m: m.id)
+            ],
+            "all_message_ids": [m.id for m in history],
+        }
+```
+
+私有规划器输出经parse_plan成为ContextPlan，build_plan再形成AssembledContext。Validation是trim返回的dict，含ok、estimated_tokens、input_limit、over_by、dropped_ids、errors、included_ids；它同时检查预算和工具配对。accepted=True表示候选计划可用，不表示已执行用户要求的代码修改或测试。
+
 ## 07. 与大模型交互：领域Message、Responses请求与ModelResponse
 
 ![14-05 · 模型协议与工具观测的数据闭环](diagrams/data-05-model.svg)
