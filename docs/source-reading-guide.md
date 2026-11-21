@@ -301,6 +301,55 @@ Runtime.initialize返回后，下一句await load_history才执行：
 
 ### T08. submit启动内层Task，watch_turn只是观察；公共调用就在这里发生
 
+T07已经完成输入分流。下面只顺着一条**新的普通任务**继续：Runtime已初始化、当前没有active任务、输入不是问答回复、斜杠命令或`/compact`。这已经是收到任务后的处理阶段，不是启动时自动执行一轮推理。
+
+这里应当读成两条协程路径，而不是`watch_turn → Runtime.emit`：`Runtime.submit`先创建执行`_turn`的Task；`watch_turn`等待同一个Task；执行事件由`_turn`及其内部调用的AgentLoop发出。下面从创建Task开始，走到第一次emit，再走到模型增量的emit，最后说明watch_turn何时恢复。
+
+![G03b · submit创建任务，watch等待，执行路径发送事件](diagrams/dual-03b-submit-emit.svg)
+
+图中蓝色实线C表示控制调用或执行继续，绿色虚线D表示Task句柄或事件数据。右侧watch_turn是等待分支，不是emit的调用者；正文按下面顺序逐句展开；该图聚焦普通新任务主线，/compact、幂等和异常分支在源码中分别说明。Store框内的SQL由专用线程执行，其余图示协程在Textual所在asyncio事件循环中协作调度。
+
+#### T08.1 先回到submit_text中的两次调用
+
+源码节选：[src/kaki/tui.py:307–310](https://github.com/anuolxl/kaki_agent/blob/41dc5033839a6ff26039cea40ba06827c1aac655/src/kaki/tui.py#L307-L310)。
+
+```python
+            self.turn_done.clear()
+            self.last_result = None
+            task = self.runtime.submit(text)
+            self.watch_turn(task)
+```
+
+`self`在这里是KakiApp界面对象，`self.runtime`是它持有的Runtime对象。前两行清除上一轮的界面完成标记和结果。第三行先调用Runtime.submit，返回后才有局部变量task；第四行再把这个task传给watch_turn。文本由submit进入执行内核，Task句柄被watch_turn用于等待，两者的用途不同。
+
+#### T08.2 Runtime.submit是普通def：同步检查，然后创建Task并立即返回
+
+源码节选：[src/kaki/runtime.py:179–187](https://github.com/anuolxl/kaki_agent/blob/41dc5033839a6ff26039cea40ba06827c1aac655/src/kaki/runtime.py#L179-L187)。
+
+```python
+    def submit(self, text: str, request_id: str | None = None) -> asyncio.Task:
+        if not self.initialized:
+            raise KakiError("Runtime还未就绪")
+        if self.active and not self.active.done():
+            raise KakiError("当前任务仍在运行；可以取消或回答待确认问题")
+        if not text.strip():
+            raise KakiError("任务不能为空")
+        self.active = asyncio.create_task(self._turn(text, request_id), name="kaki-user-turn")
+        return self.active
+```
+
+这9行按顺序做四件事：检查initialized；拒绝已有未结束active任务；拒绝空白文本；创建并返回本轮Task。`submit`是普通def，直接调用就会执行这些检查并拿到Task。TUI选择先保存句柄，再交给watch_turn等待。写成`await runtime.submit(text)`在Python中也合法，但await的是返回的Task，会等待整轮任务结束；App的Runtime.run就是这种包装。这里的“立即返回”指不等待本轮模型/工具工作完成，并不意味着这些检查完全没有执行开销。
+
+重点是第186行包含三个动作：
+
+1. `self._turn(text, request_id)`调用async函数，先得到协程对象，表示待执行的本轮处理逻辑；它还不是最终结果。
+2. `asyncio.create_task(...)`把该协程交给当前事件循环调度，返回Task。它不新建Python线程，不在这一行等待模型结束。
+3. `self.active = ...`保存这个Task作为Runtime当前任务，随后return把同一个对象交回界面。界面的task与Runtime.active指向同一个Task。
+
+在当前默认任务工厂下，create_task安排协程稍后运行，不会强制在当前Python语句间抢占执行。后续由事件循环调度`_turn`、Textual Worker及消费者；不要把“创建先后”误读成各协程第一行必然按固定顺序执行。
+
+#### T08.3 watch_turn只等已有Task；它不再调用submit，也不调用emit
+
 源码节选：[src/kaki/tui.py:316–324](https://github.com/anuolxl/kaki_agent/blob/41dc5033839a6ff26039cea40ba06827c1aac655/src/kaki/tui.py#L316-L324)。
 
 ```python
@@ -315,29 +364,86 @@ Runtime.initialize返回后，下一句await load_history才执行：
             self.turn_done.set()
 ```
 
-先执行`task = runtime.submit(text)`，创建运行_turn的Task；随后@work的watch_turn等待这个已存在的Task。不是watch_turn启动AgentLoop，也不是每个Worker都新开线程。
+`@work`让Textual创建并管理一个Worker，所以调用处是`self.watch_turn(task)`。Worker开始运行时，执行`await task`：如果本轮尚未结束，只暂停这个Worker，事件循环仍能推进`_turn`、消费队列和刷新界面；如果Task已经结束，await直接取得结果或重新抛出异常。
 
-在这个调用点，公共内核实际按下面顺序执行；本节先给完整顺序，公共C链稍后逐段展开对应源码：
+Task已由submit创建，是否执行不依赖watch_turn来“启动”。watch_turn中的await不会停止模型流，也不会替代Runtime的执行循环。await表达式会取得TurnResult，但这里没有赋值使用，也不绘制结果，只在异常路径更新状态；正常的任务正文和状态通过事件通道回到界面。
 
-```text
-Runtime.submit(text)
- → create_task(Runtime._turn)
- → lease / Store.accept_turn / before快照
- → AgentLoop.run → ContextEngine.assemble
- → while中的rebalance / Provider.complete
- → 有工具请求：planned → running → 真正I/O → commit_tool → 下一轮模型
- → 最终正文 / TurnResult
- → after快照 / working state / finish_turn / release lease
- → Task结束，watch_turn的await返回
+下面暂时沿**被等待的Task**继续，即事件循环正在推进的`Runtime._turn`。这才是从watch_turn的`await task`应该追进去阅读的代码。
+
+#### T08.4 _turn负责一次用户任务的生命周期：先看输入和状态
+
+_turn将接单、租约、快照、AgentLoop、异常处理和终态持久化组织在一个Task中。一次submit创建一次_turn；一轮_turn内部可以通过AgentLoop多次调用模型和工具。它返回的是TurnResult，运行中的状态则通过emit持续发布。
+
+| 输入/对象 | 来源 | 职责 |
+|---|---|---|
+| self | submit所属的Runtime实例 | 提供session_id、Store、Provider、Context、Tools、Checkpoint、listeners和执行租约 |
+| text | TUI处理后的本次用户文本 | 保存为用户消息；精确匹配/compact时选择整理分支 |
+| request_id | 可选；TUI普通发送未显式提供 | Store缺省生成r_ID；显式重复ID用于幂等核验，不能只按文本去重 |
+| 返回TurnResult | 普通Loop结果、手动整理结果或取消/失败结果 | 收尾时补快照和累计用量；作为最初Task的结果返回 |
+
+下面从192行开始。后续T08.6、T08.8–T08.11继续按行号展开，合起来覆盖192–300行整个函数，没有略去/compact、except或finally。
+
+源码节选：[src/kaki/runtime.py:192–219](https://github.com/anuolxl/kaki_agent/blob/41dc5033839a6ff26039cea40ba06827c1aac655/src/kaki/runtime.py#L192-L219)。
+
+```python
+    async def _turn(self, text: str, request_id: str | None) -> TurnResult:
+        turn = ""
+        result = None
+        user = None
+        warnings = []
+        before = None
+        after = None
+        self.partial_text = ""
+        self.lease.acquire()
+        try:
+            accepted, user, created = await self.store.run("accept_turn", self.session_id, text, request_id)
+            if not created:
+                rows = await self.store.run("turns", self.session_id)
+                previous = next(row for row in rows if row["id"] == accepted)
+                if previous["status"] not in {"completed", "failed", "interrupted", "cancelled"}:
+                    raise KakiError("此请求已经被接受且尚未结束；不重复执行")
+                import json
+
+                data = json.loads(previous["result_json"] or "{}")
+                if "turn_id" not in data:
+                    raise KakiError("此请求已中断；请查看恢复信息并提交新请求")
+                await self.emit("request.duplicate", accepted, {"request_id": request_id})
+                return TurnResult(**data)
+            turn = accepted
+            self.active_turn = turn
+            await self.emit(
+                "turn.started", turn, {"session_id": self.session_id, "message_id": user.id, "text": text}
+            )
 ```
 
-与此同时，Runtime事件持续送入初始化时已注册的消费者。下面沿这条并发的回流路径继续，不等整个模型循环结束才渲染。
+局部变量turn先为空，result/user先为None，warnings为空列表，before/after先为None；partial_text清空上一轮草稿。turn用来判断是否已有可处理的业务作用域，result用来判断是否有可提交终态的执行结果，快照ID和warnings会在收尾补齐。
 
-### T09. TUI接收模型增量和终态：队列与定时缓冲，不经过WebSocket
+Runtime.active保存的是执行本函数的Task，Runtime.active_turn保存的是业务turn_id，二者不是同一种ID。_turn先取得工作区执行租约，再调用`await self.store.run("accept_turn", ...)`。这时还没有调用大模型。
 
-![G04 · TUI流式输出和终态回流](diagrams/dual-04-tui-return.svg)
+Store.run不是网络RPC。它按操作名定位`Store._accept_turn`，把同步SQLite操作交给Store唯一的工作线程，并在这里等待返回：
 
-Runtime.emit统一调用已注册监听器，TUI注册的是enqueue：
+源码节选：[src/kaki/store.py:70–75](https://github.com/anuolxl/kaki_agent/blob/41dc5033839a6ff26039cea40ba06827c1aac655/src/kaki/store.py#L70-L75)。
+
+```python
+    async def run(self, operation: str, *args, **kwargs):
+        if operation.startswith("_"):
+            raise ValueError("invalid store operation")
+        method = getattr(self, "_" + operation)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self.executor, functools.partial(method, *args, **kwargs))
+```
+
+| 返回值 | 新普通任务的含义 | _turn接下来如何使用 |
+|---|---|---|
+| accepted | 新turn_id；accept_turn已保存Turn、用户Message及关键事务事件 | 赋给turn和Runtime.active_turn，成为后续事件作用域 |
+| user | 已持久化的用户Message，含稳定message_id | 传给AgentLoop；emit时携带user.id |
+| created | 是否本次新建接受记录 | True继续执行；False先检查幂等结果，不重复执行工具 |
+
+对本节的新请求，created=True，因此跳过203–214行的重复请求分支，继续215–219行：设置active_turn，然后**由_turn显式执行**`await self.emit("turn.started", ...)`。这就是本轮普通新任务第一次调用Runtime.emit的位置，既不是watch_turn调用，也不需要等待模型首个Token。
+
+如果是重复request_id，代码可发送request.duplicate并返回已有结果；如果租约/接单失败且尚无turn，异常会返回Task的等待方。文档中的正常新任务顺序不能套用到这些分支。Store保存的事务事件与发往UI的同名内存事件也是两个动作：Store完成SQL，不会自动替Runtime调用emit。
+
+#### T08.5 emit封装Event，再调用启动时注册的enqueue
 
 源码节选：[src/kaki/runtime.py:50–53](https://github.com/anuolxl/kaki_agent/blob/41dc5033839a6ff26039cea40ba06827c1aac655/src/kaki/runtime.py#L50-L53)。
 
@@ -348,11 +454,301 @@ Runtime.emit统一调用已注册监听器，TUI注册的是enqueue：
             await listener(event)
 ```
 
+这里的emit就是普通async方法，不是远程消息服务。它构造Event，然后逐个await已注册监听器。TUI在构造KakiApp时已经完成这个注册：
+
+源码节选：[src/kaki/tui.py:87–87](https://github.com/anuolxl/kaki_agent/blob/41dc5033839a6ff26039cea40ba06827c1aac655/src/kaki/tui.py#L87-L87)。
+
+```python
+        self.runtime.listeners.append(self.enqueue)
+```
+
+这个绑定方法的self仍指向原来的KakiApp，所以Runtime不用知道Textual控件细节，调用监听器便能进入界面对象的enqueue：
+
 源码节选：[src/kaki/tui.py:102–103](https://github.com/anuolxl/kaki_agent/blob/41dc5033839a6ff26039cea40ba06827c1aac655/src/kaki/tui.py#L102-L103)。
 
 ```python
     async def enqueue(self, event: Event):
         await self.event_queue.put(event)
+```
+
+数据方向现在完整了：`text → submit → _turn → turn_id/user.id → Event("turn.started", ...) → KakiApp.enqueue → event_queue`。on_mount启动的consume_events在另一个协程中等待同一队列，拿到turn.started后显示用户输入并把界面置为运行中。它可以在主任务仍执行时更新界面，不必等watch_turn返回。
+
+`await emit(...)`只等监听器完成本次调用，不表示等界面绘制完成，更不表示本轮结束。enqueue成功放入队列后便可返回；队列满时put会等待可用位置，形成背压。消费者的分派和绘制在T09紧接着展开。
+
+#### T08.6 第一次emit返回后，_turn继续快照、读取历史和进入AgentLoop
+
+源码节选：[src/kaki/runtime.py:220–227](https://github.com/anuolxl/kaki_agent/blob/41dc5033839a6ff26039cea40ba06827c1aac655/src/kaki/runtime.py#L220-L227)。
+
+```python
+            if self.snapshots_enabled:
+                await self.emit("runtime.status", turn, {"text": "建立工作区基线快照…"})
+                snapshot = await self.checkpoint.capture(turn, "before")
+                before = snapshot["id"]
+                if snapshot["state"] != "ready":
+                    warnings.append(snapshot.get("error", "快照失败"))
+                    await self.emit("snapshot.warning", turn, snapshot)
+            history = [m for m in await self.store.run("messages", self.session_id) if m.id != user.id]
+```
+
+启用快照时，_turn先发runtime.status，再捕获before快照；失败时记录警告。然后读取当前会话历史，排除刚接受的当前user消息，避免重复加入上下文。接着按text选择两条路径：
+
+源码节选：[src/kaki/runtime.py:228–250](https://github.com/anuolxl/kaki_agent/blob/41dc5033839a6ff26039cea40ba06827c1aac655/src/kaki/runtime.py#L228-L250)。
+
+```python
+            if text.strip() == "/compact":
+                window = await self.context.assemble(
+                    self.session_id,
+                    history,
+                    user,
+                    self.tools.definitions(),
+                    force=True,
+                    recovery=self.recovery.context(self.recovery_plan),
+                )
+                from .types import ModelResponse
+
+                answer = f"上下文已整理：路径={window.metadata['path']}，保留历史{len(window.metadata['included_ids'])}条，估算输入{window.estimated_tokens}/{window.budget.input_limit} tokens。原始历史和归档仍保留。"
+                message, _ = await self.store.run(
+                    "commit_model", self.session_id, turn, ModelResponse(text=answer)
+                )
+                await self.emit(
+                    "model.committed", turn, {"draft_id": "", "message_id": message.id, "text": answer}
+                )
+                result = TurnResult(turn, "completed", answer, "manual_compaction")
+            else:
+                result = await AgentLoop(self).run(
+                    turn, self.session_id, user, history, self.recovery.context(self.recovery_plan)
+                )
+```
+
+| 分支 | 执行内容 | 如何得到result |
+|---|---|---|
+| text.strip() == /compact | 强制assemble上下文，生成说明文本，commit_model保存，再emit model.committed | 本地构造completed/manual_compaction的TurnResult |
+| 其他普通任务 | 调用AgentLoop(self).run，传入turn、session_id、user、history和恢复线索 | await Loop返回TurnResult |
+
+/compact也先接受Turn、保存用户消息并按策略快照，但不进入普通AgentLoop。force=True的上下文整理可能调用Curator模型，因此不应把它描述成完全不调用大模型。它与普通任务最终都会进入本函数相同的finally。
+
+下面沿普通任务的else分支继续。
+
+AgentLoop(self)把**同一个Runtime**交给Loop；Loop构造函数保存在self.runtime，run中取名rt。因而后续`rt.emit(...)`仍是前面那个Runtime.emit，监听器列表和KakiApp队列也相同。没有创建第二个Runtime或另一套TUI。
+
+Loop先完成上下文组装并发布context.assembled：
+
+源码节选：[src/kaki/loop.py:18–24](https://github.com/anuolxl/kaki_agent/blob/41dc5033839a6ff26039cea40ba06827c1aac655/src/kaki/loop.py#L18-L24)。
+
+```python
+        rt = self.runtime
+        cfg = rt.config.agents.defaults
+        definitions = rt.tools.definitions()
+        window = await rt.context.assemble(session, history, user, definitions, recovery=recovery)
+        await rt.emit(
+            "context.assembled", turn, window.metadata | {"estimated_tokens": window.estimated_tokens}
+        )
+```
+
+再进入有界while，每轮重平衡窗口，发布model.started，然后调用Provider。上下文组装可能包含Curator调用；以上仍属于本次Task的执行，watch_turn仍在等待。
+
+#### T08.7 模型Token如何再次走到emit：靠on_delta回调，不靠watch_turn
+
+AgentLoop在run内部定义回调。函数被定义时不会立刻发布事件，等Provider调用它才执行：
+
+源码节选：[src/kaki/loop.py:46–53](https://github.com/anuolxl/kaki_agent/blob/41dc5033839a6ff26039cea40ba06827c1aac655/src/kaki/loop.py#L46-L53)。
+
+```python
+        async def on_delta(text, call_id):
+            nonlocal draft_last, draft_text
+            draft_text += text
+            rt.partial_text = draft_text
+            await rt.emit("model.delta", turn, {"draft_id": call_id, "text": text})
+            if time.monotonic() - draft_last > 0.7:
+                draft_last = time.monotonic()
+                await rt.store.run("draft", turn, draft_text)
+```
+
+while中的Provider调用把这个函数作为`on_delta=on_delta`参数传进去：
+
+源码节选：[src/kaki/loop.py:55–72](https://github.com/anuolxl/kaki_agent/blob/41dc5033839a6ff26039cea40ba06827c1aac655/src/kaki/loop.py#L55-L72)。
+
+```python
+        iteration = 0
+        while iteration < cfg.max_tool_iterations:
+            iteration += 1
+            if asyncio.current_task().cancelling():
+                raise asyncio.CancelledError
+            definitions = rt.tools.definitions()
+            updated = await rt.context.rebalance(session, window, definitions)
+            if updated is not window:
+                window = updated
+                await rt.emit(
+                    "context.compacted", turn, window.metadata | {"estimated_tokens": window.estimated_tokens}
+                )
+            await rt.emit("model.started", turn, {"iteration": iteration, "model": cfg.model})
+            draft_text = ""
+            try:
+                response = await rt.provider.complete(
+                    window.messages, definitions, turn_id=turn, kind="main", on_delta=on_delta
+                )
+```
+
+Provider真正收到上游文本增量时，再执行传入的回调：
+
+源码节选：[src/kaki/provider.py:209–215](https://github.com/anuolxl/kaki_agent/blob/41dc5033839a6ff26039cea40ba06827c1aac655/src/kaki/provider.py#L209-L215)。
+
+```python
+                stream = await self.client.responses.create(**active)
+                async for event in stream:
+                    typ = event.type
+                    if typ == "response.output_text.delta":
+                        visible = True
+                        if on_delta:
+                            await on_delta(event.delta, call_id)
+```
+
+这次的真实调用方向是：`Provider.complete → Responses流的response.output_text.delta → await on_delta(delta, call_id) → rt.emit("model.delta", ...) → enqueue → event_queue`。on_delta闭包记住rt和本次turn，Provider只需提供增量及call_id，不需要直接引用KakiApp。
+
+回调先累计草稿与Runtime.partial_text，再emit当前这一个增量；约0.7秒条件满足时还保存一次完整草稿。T09的消费者把增量合并到pending，定时flush才写入控件。这里的emit发生在Provider.complete尚未返回期间；watch_turn此时也没有返回。
+
+#### T08.8 Loop执行结束或中断后，_turn区分正常结果、取消和失败
+
+正常情况下，result已经由AgentLoop.run或/compact分支提供，接着进入finally。执行try期间出现取消或普通异常时，走以下代码：
+
+源码节选：[src/kaki/runtime.py:251–269](https://github.com/anuolxl/kaki_agent/blob/41dc5033839a6ff26039cea40ba06827c1aac655/src/kaki/runtime.py#L251-L269)。
+
+```python
+        except asyncio.CancelledError:
+            if not turn:
+                raise
+            result = TurnResult(
+                turn,
+                "cancelled",
+                self.partial_text or "已取消当前任务；已完成副作用不会自动撤回。",
+                "user_cancel",
+            )
+        except Exception as exc:
+            if not turn:
+                raise
+            result = TurnResult(
+                turn,
+                "failed",
+                self.partial_text or "任务执行失败：" + safe_error(exc),
+                getattr(exc, "category", "execution_error"),
+                error=safe_error(exc),
+            )
+```
+
+| 情况 | turn尚未赋值 | 已有turn_id |
+|---|---|---|
+| asyncio.CancelledError | 继续抛出取消，等待Task的Worker可以看到取消 | 构造status=cancelled、stop_reason=user_cancel的TurnResult |
+| 普通Exception | 继续抛出异常，由watch_turn更新错误状态 | 构造status=failed的TurnResult；stop_reason取异常category或execution_error |
+
+取消/失败结果优先保留partial_text，空草稿才使用说明文本。这里构造的TurnResult只是内存对象，数据库终态尚未提交；已完成文件修改、Shell或浏览器副作用不会自动撤回。异常被转换为TurnResult后，Task可能正常返回这个失败/取消结果，而不再向watch_turn抛出同一个异常，所以正常失败展示也依赖后面的turn.finished事件。
+
+lease.acquire在try之前；取租约失败直接使Task失败，没有获取成功的租约要释放。accept_turn通过线程执行SQL，SQL事务完成与协程收到返回值、给turn赋值不是一个原子步骤；如果在这个窗口中断，可能已有数据库记录而本地turn仍为空。这种残留由下次恢复核验，不能承诺每种中断都会在本进程内发出turn.finished。
+
+#### T08.9 finally先检查结果作用域，再清理提问和捕获after快照
+
+源码节选：[src/kaki/runtime.py:270–286](https://github.com/anuolxl/kaki_agent/blob/41dc5033839a6ff26039cea40ba06827c1aac655/src/kaki/runtime.py#L270-L286)。
+
+```python
+        finally:
+            try:
+                if result and turn:
+                    if self.question and not self.question["future"].done():
+                        self.question["future"].cancel()
+                    self.question = None
+                    if self.snapshots_enabled and not self.closed:
+                        try:
+                            snapshot = await asyncio.shield(self.checkpoint.capture(turn, "after"))
+                            after = snapshot["id"]
+                            if snapshot["state"] != "ready":
+                                warnings.append(snapshot.get("error", "结束快照失败"))
+                                await self.emit("snapshot.warning", turn, snapshot)
+                        except Exception as exc:
+                            warnings.append("结束快照失败：" + safe_error(exc))
+                    elif self.snapshots_enabled:
+                        warnings.append("程序退出，未等待结束快照；会话与已确定执行结果仍保留")
+```
+
+finally在进入try后离开该作用域时执行，包含正常路径、异常路径和try中的提前return。它内部又区分两层：`if result and turn`包住终态收尾；最内层finally负责清理active_turn与释放租约。
+
+只有同时存在result和turn才进入这段收尾。幂等分支直接return旧TurnResult，没有给本次result赋值，所以跳过新快照和二次finish_turn，但仍经过租约清理。尚未接受Turn就抛出的异常也不会伪造一个新的业务终态。
+
+收尾先取消仍未解决的提问Future并清空question；随后在快照启用且Runtime未关闭时捕获after快照。asyncio.shield保护内部快照协程免于随外层取消直接被取消，它不等于外层任务从此不可取消。普通快照异常转成warnings；程序退出已设置closed时跳过新after快照并记录说明，避免退出又启动一次耗时快照。
+
+#### T08.10 补齐TurnResult，提交唯一终态，然后发送turn.finished
+
+源码节选：[src/kaki/runtime.py:287–295](https://github.com/anuolxl/kaki_agent/blob/41dc5033839a6ff26039cea40ba06827c1aac655/src/kaki/runtime.py#L287-L295)。
+
+```python
+                    result.before_snapshot = before
+                    result.after_snapshot = after
+                    result.usage = await self.store.run("usage", turn)
+                    try:
+                        await self.context.after_turn(self.session_id, user, result)
+                    except Exception as exc:
+                        warnings.append("派生上下文更新失败，原始执行事实仍保留：" + safe_error(exc))
+                    await self.store.run("finish_turn", result)
+                    await self.emit("turn.finished", turn, as_result(result, warnings))
+```
+
+按这9行的顺序：把before/after快照ID写入result；从Store累计本轮所有已知模型调用用量；执行Context.after_turn更新派生状态；调用Store.finish_turn持久化执行终态；最后才emit turn.finished。
+
+Context.after_turn失败被降为warning，原始消息和已确定工具结果仍保留。Store.finish_turn及emit不在这层except里：如果它们失败，本函数会继续抛出异常，不能承诺一定向UI发出终态事件。内层清理finally仍会运行。turn.finished的数据由as_result(result,warnings)组织，消费者能看到执行结果和警告；completed只说明本轮控制流程结束，测试结果仍需看verification字段。
+
+这个顺序保证正常情况下先有数据库终态，再通知UI，emit与SQLite提交仍是两个独立动作。工作区after快照和恢复线索不提供浏览器或网络副作用的原子回滚。
+
+#### T08.11 清理业务作用域、释放租约，才结束最初的Task
+
+源码节选：[src/kaki/runtime.py:296–300](https://github.com/anuolxl/kaki_agent/blob/41dc5033839a6ff26039cea40ba06827c1aac655/src/kaki/runtime.py#L296-L300)。
+
+```python
+                    self.recovery_plan = {}
+            finally:
+                self.active_turn = ""
+                self.lease.release()
+        return result
+```
+
+成功完成终态发布后清空recovery_plan；最内层finally清空active_turn、释放lease，最后返回result。这里没有把Runtime.active设为None：它仍指向最初的Task，Task结束后done()为True，下一次submit据此允许新任务。
+
+正常路径返回的TurnResult完成了最初submit创建的Task；watch_turn的await task此时才可正常恢复。幂等提前return仍返回已有结果；重抛的异常/取消则在finally清理后继续传给等待方。清理本身失败也可能替代原先的返回或异常，不能把finally理解为无条件执行成功的事务。
+
+注意两个完成信号的先后：turn.finished先放入队列，Task随后返回；界面何时消费该事件与watch_turn何时被调度恢复，没有固定相对顺序。因此不能把watch_turn结束当成发送emit的触发条件，也不能把消费者显示终态画成watch_turn发起的动作。
+
+到这里，执行路径和观察路径重新汇合：**submit负责创建，_turn/AgentLoop负责执行和发事件，watch_turn负责等待，consume_events/flush_tokens负责显示。** 下面继续沿已经进入event_queue的数据，逐段讲TUI怎样消费和渲染。
+
+### T09. TUI接收模型增量和终态：队列与定时缓冲，不经过WebSocket
+
+![G04 · TUI流式输出和终态回流](diagrams/dual-04-tui-return.svg)
+
+T08已按调用顺序展开submit、_turn、emit和enqueue，事件已经进入TUI的event_queue。现在继续沿消费者处理：运行事件显示状态，模型增量进入缓冲，终态事件更新完成标记。此处的监听器调用不经过watch_turn，也不通过WebSocket。
+
+先看消费者从队列取出事件，并处理本轮最先出现的turn.started与model.started：
+
+源码节选：[src/kaki/tui.py:153–174](https://github.com/anuolxl/kaki_agent/blob/41dc5033839a6ff26039cea40ba06827c1aac655/src/kaki/tui.py#L153-L174)。
+
+```python
+    async def consume_events(self):
+        try:
+            while True:
+                event = await self.event_queue.get()
+                d = event.data
+                if event.type == "runtime.status":
+                    self.query_one("#status", Static).update(d["text"])
+                elif event.type == "runtime.ready":
+                    if d.get("browser_warning"):
+                        self.query_one("#tools", RichLog).write("浏览器未连接：" + d["browser_warning"])
+                    else:
+                        self.query_one("#tools", RichLog).write(
+                            f"Playwright MCP：{d.get('browser_tools', 0)}个浏览器工具"
+                        )
+                elif event.type == "turn.started":
+                    self.phase("running", "◉ 本轮任务正在运行 · 请等待，或点击停止本轮")
+                    await self.bubble(str(d["message_id"]), "user", d["text"])
+                    self.query_one("#status", Static).update("任务运行中…")
+                elif event.type == "model.started":
+                    self.query_one("#status", Static).update(
+                        f"模型调用 · 第{d['iteration']}轮 · 当前输入估算{self.current_estimate} tokens"
+                    )
 ```
 
 consume_events从容量512的event_queue取事件。model.delta先按draft_id积累pending；model.committed先刷完pending，再将草稿气泡切换为稳定message_id，避免正文重复：
