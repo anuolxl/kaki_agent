@@ -4,6 +4,8 @@
 
 源码基线固定到 [`41dc503`](https://github.com/anuolxl/kaki_agent/tree/41dc5033839a6ff26039cea40ba06827c1aac655)。源码节选直接提取该提交；“阅读”注释只用于解释。本文区分普通新任务、斜杠命令、提问回答和界面操作，不把所有输入都叫作“启动新loop”。
 
+字段与概念对照见[核心概念、数据结构与状态关系](data-structures-guide.md)：区分Turn、Task、ModelCall及各层ID，按真实类型解释上下文、模型协议、工具与SQLite记录。
+
 图中蓝色实线C表示控制调用或控制流继续，绿色虚线D表示返回值、工具观测或事件数据；同级辅助函数节点表示调用方按顺序执行下一句，不表示前一个辅助函数直接调用后一个。图下注明简化范围，完整分支以随后的源码为准。
 
 **“公共链路”指复用同一套类和方法，不是两个界面共享同一个内存Runtime。** TUI创建自己的Runtime实例；App为每个已打开工作区持有一个Runtime。两个进程在相同KAKI_HOME和工作区下可看到同一个SQLite持久历史，但Future、active Task和浏览器ClientSession各自持有，不能把App当成另一个TUI任务的控制台。

@@ -4,6 +4,8 @@
 
 按实际调用顺序逐段阅读代码，见 [源码阅读指南](source-reading-guide.md)。其中说明 SQLite 为同进程数据库库、AppServer 为本机界面传输层，分别展开TUI/App的启动、输入分流、输出与控制交互；公共内核只展开一次，附函数调用流程图及控制流/数据流时序图。
 
+结构与字段：[数据结构与关系指南](data-structures-guide.md)，包含12个数据类、15个配置模型、运行对象及动态字典/SQL记录的责任、状态、转换和持久化边界。
+
 ```mermaid
 flowchart TB
     User[用户] -->|控制：打开项目、发送、停止、退出| Window[macOS WebKit 窗口 / 浏览器]
