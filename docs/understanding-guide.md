@@ -1,6 +1,6 @@
 # 15 任务理解、Query改写与执行权限（Kaki v0.3）
 
-本章对应已实现的v0.3，不再是待实施方案。源码基线固定到[d5b8675](https://github.com/anuolxl/kaki_agent/tree/d5b8675b568209182f74da1f626060627fe6ac25)。原有TUI/App入口与主loop继续复用，本轮在接单后增加任务理解，在执行工具前增加权限检查。当前没有操作系统级沙箱；获准的测试仍以当前用户权限运行。
+本章对应已实现的v0.3，不再是待实施方案。源码基线固定到[d5b8675](https://github.com/anuolxl/kaki_agent/tree/d5b8675b568209182f74da1f626060627fe6ac25)。uv测试runner的兼容修复对应[39e7acf](https://github.com/anuolxl/kaki_agent/tree/39e7acffe32d998b94a08fb147dac6df94b904c5)；其余节选仍使用上述固定基线。原有TUI/App入口与主loop继续复用，本轮在接单后增加任务理解，在执行工具前增加权限检查。当前没有操作系统级沙箱；获准的测试仍以当前用户权限运行。
 
 ## 15.01 从用户输入到结束，先按顺序建立全貌
 
@@ -453,9 +453,9 @@ App使用黄色问题卡和选择按钮，TUI显示问题及精确选项。授�
 
 ## 15.08 Shell和浏览器MCP的具体范围
 
-Shell不再调用`bash -c`，而是先解析为argv。支持pwd/echo、`git status/diff/ls-files`和明确的测试入口：pytest、`python[3] -m unittest/pytest`、`go test`、`node --test`、`npm test/npm run test`、`cargo test`、`make test/docker-test`；兼容不带附加选项的`uv run`前缀。任意脚本、`python -c`、安装/部署/Git写操作、管道、变量替换和重定向均拒绝。
+Shell不再调用`bash -c`，而是先解析为argv。支持pwd/echo、`git status/diff/ls-files`和明确的测试入口：pytest、`python[3] -m unittest/pytest`、`go test`、`node --test`、`npm test/npm run test`、`cargo test`、`make test/docker-test`；带`uv run`时保留完整runner，让uv使用项目解释器与依赖，不改用宿主python/pytest；只开放测试入口的uv包装。已通过真实uv执行并断言测试运行在项目`.venv`内。任意脚本、`python -c`、安装/部署/Git写操作、管道、变量替换和重定向均拒绝。
 
-源码节选：[src/kaki/permissions.py:47–61](https://github.com/anuolxl/kaki_agent/blob/d5b8675b568209182f74da1f626060627fe6ac25/src/kaki/permissions.py#L47-L61)。
+源码节选：[src/kaki/permissions.py:47–64](https://github.com/anuolxl/kaki_agent/blob/39e7acffe32d998b94a08fb147dac6df94b904c5/src/kaki/permissions.py#L47-L64)。
 
 ```python
 def structured_command(command):
@@ -468,11 +468,14 @@ def structured_command(command):
         raise KakiError("命令引号不完整") from None
     if not argv:
         raise KakiError("命令不能为空")
+    runner = []
     if argv[0] == "uv" and argv[1:2] == ["run"]:
-        argv = argv[2:]
+        runner, argv = argv[:2], argv[2:]
     if not argv or "/" in argv[0] or "\\" in argv[0]:
         raise KakiError("命令必须使用支持的可执行程序名")
     name = argv[0]
+    if runner and name in {"pwd", "echo", "git"}:
+        raise KakiError("uv run只用于受支持的测试入口，不作为只读命令包装器")
 ```
 
 阅读说明：shlex只用于argv分组，不是Shell执行器。Git禁pager、外部diff/textconv和可选index更新，输出统一排除凭据与Agent配置。测试被分类为代码执行，而非只读；当前没有OS沙箱，获准测试内部仍可能读写文件和访问网络，这是本期边界。
