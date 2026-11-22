@@ -78,3 +78,5 @@ Provider.complete新增max_attempts=4，主loop保留有限重试；理解调用
 SQLite schema3新增decisions，外键关联session/turn；取消或进程恢复将pending设expired。已回答记录保留用于审计，临时能力不恢复，不自动重放UNKNOWN工具。授权文本不进入用户原始任务，澄清文本保留为真实同Turn消息。
 
 兼容测试：test_understanding_permissions.py、test_understanding_ui.py、test_config_workspace.py；原Store/Runtime/Context/Provider/TUI/App回归继续执行。开发验收包括真实RightCode两轮TUI对话、App修复/测试/review/追问，以及SQLite证据、独立测试与界面截图。
+
+结构化测试命令若带uv run前缀，必须保留完整argv，让uv选择项目解释器与依赖；禁止去掉前缀后改用宿主python/pytest。uv包装的pwd/echo/Git不能归为只读并自动批准，当前直接拒绝。回归用临时uv runner子进程验证实际执行路径，不仅比较参数列表。
