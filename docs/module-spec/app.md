@@ -83,3 +83,5 @@ WS 每条含递增 seq。workspace.changed 含 workspace_id/live/reload，reload
 sessions.archived 持久字段、v1备份迁移和事务语义见 [core.md](core.md)。App打开历史不启动MCP，首次任务惰性连接；配置和原始会话模型一致性检查不变。打开时在可获得租约的条件下恢复孤儿 Turn；其他进程占有租约时不冒充其任务已完成。数据库迁移保留原表事实，v1备份用于人工回退，不能在v2上直接运行旧版本写入。
 
 tests/test_app_controller.py 覆盖业务状态/持久化；test_app_server.py 覆盖 HTTP/WS/鉴权；test_app_process.py 验证实际子进程退出和单实例；test_tui_pty.py 验证真实终端退出；tests/ui-state.test.mjs 覆盖前端状态。原生 Cocoa 运行由 macOS 手工验收，Linux CI 不声称验证原生窗口。
+
+用户级Finder/Dock启动器由scripts/install_macos_app.py生成；CFBundleShortVersionString/CFBundleVersion读取kaki.__version__，不再固定0.2，避免包升级后Finder显示旧版本。

@@ -12,13 +12,15 @@ v0.3 增加独立、可切换策略的意图识别与 Query 改写（默认 hybr
 
 ## 安装与本机部署
 
-需要 Git、uv、ripgrep、Node.js/npm，以及 Google Chrome（浏览器 MCP 使用独立 profile）。当前部署路径为 `/Users/bytedance/github/kaki_agent`。
+需要 Git、uv、ripgrep、Node.js/npm，以及 Google Chrome（浏览器 MCP 使用独立 profile）。本机v0.3的固定部署源码为 `/Users/bytedance/github/kaki_agent-v0.3`；原 `/Users/bytedance/github/kaki_agent` 工作区保留用户未提交文档，不强制改写。全局 `kaki-agent`/`kaki-app` 指向新目录。
 
 ```bash
-cd /Users/bytedance/github/kaki_agent
+cd /Users/bytedance/github/kaki_agent-v0.3
 uv python install 3.12
 uv sync --python 3.12 --extra dev --locked
-uv tool install --editable /Users/bytedance/github/kaki_agent --python 3.12 --force
+mkdir -p "$HOME/.kaki"
+uv export --locked --no-dev --no-emit-project --no-hashes --format requirements.txt --output-file "$HOME/.kaki/runtime-constraints.txt"
+uv tool install --editable /Users/bytedance/github/kaki_agent-v0.3 --python 3.12 --force --constraints "$HOME/.kaki/runtime-constraints.txt"
 uv run python scripts/install_macos_app.py
 open "$HOME/Applications/Kaki.app"
 ```
