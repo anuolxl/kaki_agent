@@ -21,6 +21,8 @@ def workspace(tmp_path, monkeypatch):
 def config():
     config = Config()
     config.runtime.checkpoint.policy = "never"
+    # Legacy kernel tests exercise orchestration, not the new optional interpretation call.
+    config.understanding.enabled = False
     return config
 
 

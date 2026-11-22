@@ -13,12 +13,21 @@ class AgentLoop:
         self.runtime = runtime
 
     async def run(
-        self, turn: str, session: str, user: Message, history: list[Message], recovery: str = ""
+        self,
+        turn: str,
+        session: str,
+        user: Message,
+        history: list[Message],
+        recovery: str = "",
+        request=None,
+        before_mutation=None,
     ) -> TurnResult:
         rt = self.runtime
         cfg = rt.config.agents.defaults
         definitions = rt.tools.definitions()
-        window = await rt.context.assemble(session, history, user, definitions, recovery=recovery)
+        window = await rt.context.assemble(
+            session, history, user, definitions, recovery=recovery, request=request
+        )
         await rt.emit(
             "context.assembled", turn, window.metadata | {"estimated_tokens": window.estimated_tokens}
         )
@@ -39,6 +48,9 @@ class AgentLoop:
             "turn_id": turn,
             "user_message_id": user.id,
             "user_text": user.content,
+            "human_text": request.human_text if request else user.content,
+            "request": request,
+            "before_mutation": before_mutation,
         }
         draft_last = 0.0
         draft_text = ""
@@ -119,11 +131,21 @@ class AgentLoop:
                     observations[call.id] = observation
                     tool_count += 1
                     failures += int(result.failed)
-                    if call.name == "kaki_exec" and rt.is_test_command(call.arguments.get("command", "")):
+                    if (
+                        result.executed
+                        and call.name == "kaki_exec"
+                        and rt.is_test_command(call.arguments.get("command", ""))
+                    ):
                         evidence = {
                             "command": call.arguments["command"],
                             "cwd": call.arguments.get("working_dir", str(rt.workspace.root)),
                             "exit_code": result.exit_code,
+                            "executed": result.executed,
+                            "state": "denied"
+                            if result.denied
+                            else "failed"
+                            if result.failed
+                            else "succeeded",
                             "artifacts": result.artifacts,
                             "run_id": by_call[call.id]["id"],
                         }
@@ -147,6 +169,15 @@ class AgentLoop:
                 results = await rt.tools.execute_many(response.tool_calls, ctx, started, completed)
                 for call, result in zip(response.tool_calls, results, strict=True):
                     window.messages.append(observations[call.id])
+                    if result.denied:
+                        from dataclasses import replace
+
+                        window.messages[-1] = replace(
+                            window.messages[-1],
+                            content=window.messages[-1].content
+                            + "\n[Kaki] 此操作被权限策略拒绝。不得通过其他工具绕过，不得声称已经执行或验证。",
+                        )
+                        continue
                     if result.failed and not any(
                         t in result.text.lower() for t in ["timeout", "timed out", "429", "rate limit"]
                     ):

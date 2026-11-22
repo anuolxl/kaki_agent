@@ -60,6 +60,9 @@ class ToolResult:
     parts: list[dict[str, Any]] = field(default_factory=list)
     exit_code: int | None = None
     touched_paths: list[str] = field(default_factory=list)
+    executed: bool = True
+    denied: bool = False
+    decision_id: str | None = None
 
 
 @dataclass
@@ -102,6 +105,12 @@ class KakiError(Exception):
 
 class ContextOverflow(KakiError):
     pass
+
+
+class InteractionRequired(KakiError):
+    def __init__(self, kind: str, question: str):
+        self.category = kind + "_required"
+        super().__init__(question)
 
 
 class ProviderError(KakiError):

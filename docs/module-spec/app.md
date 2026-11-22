@@ -1,4 +1,4 @@
-# App 层契约（v0.2）
+# App 层契约（v0.3）
 
 实现：`src/kaki/desktop.py`、`app_server.py`、`app_controller.py`、`ui/`。本模块只为本机窗口服务，配置沿用内核，未添加第二套 apiKey/model 配置。
 
@@ -28,7 +28,7 @@
 | notification | TimerHandle/null | 增量60ms合并推送，close 时取消 |
 | app-workspaces.json | schema_version=1，paths:list[str] | 最近50个规范项目路径，去重、原子写入0600；不是会话正文 |
 
-`Engine.live()` 返回 workspace_id、session_id、busy、phase、label、started_at、turn_id、drafts、tools、warnings、result、pending_text、question。question 只含 id/question/options，不暴露内部 Future。数据来自内存，同一字段没有跨进程恢复保证。
+`Engine.live()` 返回 workspace_id、session_id、busy、phase、label、started_at、turn_id、drafts、tools、warnings、result、pending_text、question。question 含 id/question/options/kind/operation/session_id/turn_id，不暴露内部 Future。kind=clarification/approval/task；operation为授权目标、能力、argv、指纹、写入前hash与参数预览。构造点DecisionService.request。数据来自内存，同一字段没有跨进程恢复保证；持久交互事实在decisions表。
 
 `detail(workspace,session)` 返回 session（Store 字段含 archived）、messages（id/turn_id/role/text/html/created_at）、turns（id/status/text/stop_reason/error/created/ended/result/tools）、live、model、context、seq。messages 仅展示有正文的 user/assistant；工具记录单独展示。tools 含 tool_call_id/name/state/arguments/preview，preview 最多1600字符；原结果仍持久保存。tool_call_id 用于历史与 live 卡片去重，工具开始/结束时重读持久结果，结束增量保留开始时的参数。此版本历史一次全量返回，尚无分页。
 
@@ -47,6 +47,10 @@
 | archived/closing/closed | 软归档 / App正在退出 / 退出连接已关闭 | 否 |
 
 `model.committed` 和 `turn.finished` 均不直接让 App 显示 completed，`_execute` 等 `Runtime.run` 返回才解除 busy。同项目另一会话运行时，当前会话可阅读但禁发新任务，并可跳转到正在运行会话。Engine 遗留状态在新任务时重置，Store 原文不重置。
+
+v0.3 `understanding.started` 映射preparing，`understanding.completed`及`question.answered`恢复running；等待澄清或授权仍使用waiting_user，不建立另一Turn。工具结束事件带state/executed；denied卡片明确显示“已拒绝，未执行”。非法授权回答返回409且保留问题，按钮采用精确选项文本；不能把含有“可以”的任意句子当授权。
+
+`AppController.answer(workspace,session,question_id,text,choice=None)`及HTTP `/answer`支持可选choice=once/turn/deny。后端同时校验精确文本、作用域、有效问题和配置允许的scope；前端不拥有授权事实。TUI也只在Runtime.answer成功后清空question_id，输入错误不得触发turn_done。新增字段保持旧task问答兼容，测试见test_understanding_ui.py。
 
 停止本轮：`Controller.stop` → 若 Runtime 已有 active Task，调用 Runtime.cancel 并等待其正常收尾；若仍在 MCP/会话准备，取消 Controller 所拥有的 Task。App 窗口保持可用。退出 App：`Controller.close` → Runtime.close 先标记 closed 再取消，省略新的 after 快照以避免退出时再做耗时全仓操作，并记录警告；已发生的文件副作用不会自动撤回。
 

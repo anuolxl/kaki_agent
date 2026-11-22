@@ -80,7 +80,13 @@ class Workspace:
         rel = p.relative_to(self.root)
         if ".git" in rel.parts:
             raise KakiError("工具不能访问Git内部元数据")
-        if any(x in {".env", "credentials"} or x.endswith((".pem", ".key", ".p12")) for x in rel.parts):
+        if any(part in {".kaki", ".codex"} for part in rel.parts) and p.name == "config.json":
+            raise KakiError("工具不能读取Agent认证配置")
+        if any(
+            x.lower().startswith((".env", "credentials", "secrets"))
+            or x.lower().endswith((".pem", ".key", ".p12"))
+            for x in rel.parts
+        ):
             raise KakiError("拒绝通过Agent工具读取或修改凭据文件")
         if p == self.root:
             return p

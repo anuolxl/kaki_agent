@@ -217,7 +217,11 @@ class AppServer:
     async def answer(self, request):
         data = await request.json()
         await self.controller.answer(
-            request.match_info["workspace"], request.match_info["session"], data["question_id"], data["text"]
+            request.match_info["workspace"],
+            request.match_info["session"],
+            data["question_id"],
+            data["text"],
+            data.get("choice"),
         )
         return web.json_response({"ok": True})
 

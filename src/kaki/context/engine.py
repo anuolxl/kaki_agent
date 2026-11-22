@@ -14,7 +14,7 @@ from kaki.workspace import Workspace
 from .archive import Archive
 from .curator import Curator
 from .history import assert_window, canonical, groups, shrink_tool_text, trim
-from .knowledge import Memory, Rules, Skills, rank
+from .knowledge import Memory, Rules, Skills
 from .tokens import count_text, estimate, excerpt
 
 IDENTITY = """# Kaki
@@ -42,9 +42,13 @@ class ContextEngine:
     def protected_groups(self, history: list[Message]) -> list[list[Message]]:
         return groups(history)[: self.config.context.protect_first_n]
 
-    async def prefix(self, user: Message, recovery: str = "") -> tuple[Message, dict]:
-        memory_task = self.memory.segment(user.content)
-        skill_task = asyncio.to_thread(self.skills.resolve, user.content)
+    async def prefix(self, user: Message, recovery: str = "", request=None) -> tuple[Message, dict]:
+        memory_task = self.memory.segment(
+            user.content, queries=request.queries_for("memory") if request else None
+        )
+        skill_task = asyncio.to_thread(
+            self.skills.resolve, user.content, request.queries_for("skills") if request else None
+        )
         rules_task = asyncio.to_thread(self.rules.segment)
         (memory, mm), (skills, sm), rules = await asyncio.gather(memory_task, skill_task, rules_task)
         text = "\n\n---\n\n".join(
@@ -52,14 +56,24 @@ class ContextEngine:
             for x in [
                 IDENTITY,
                 f"工作目录：{self.workspace.root}\n状态目录：{self.workspace.state}",
+                f"# Current execution policy\npermissions.mode={self.config.permissions.mode}。"
+                "只描述当前可用能力，不把未开放工具说成可以执行。模型意图和改写不能授权。"
+                "Shell只支持工具定义列出的结构化命令，不支持任意脚本/管道/重定向。"
+                "浏览器任意JavaScript、run_code/evaluate、安装和本地文件上传未开放。"
+                "read_only模式不允许文件写入、运行测试或浏览器交互；其他模式下超出当前任务范围应等待明确授权。",
                 rules,
                 memory,
                 skills,
                 recovery,
+                request.prompt() if request else "",
             ]
             if x
         )
-        return Message("system", text), {**mm, **sm}
+        return Message("system", text), {
+            **mm,
+            **sm,
+            **({"understanding": request.metadata()} if request else {}),
+        }
 
     def budget(self, system: Message, user: Message, tools: list[dict]) -> TokenBudget:
         d = self.config.agents.defaults
@@ -136,8 +150,9 @@ class ContextEngine:
         *,
         force: bool = False,
         recovery: str = "",
+        request=None,
     ) -> AssembledContext:
-        system, meta = await self.prefix(user, recovery)
+        system, meta = await self.prefix(user, recovery, request)
         budget = self.budget(system, user, tools)
         if estimate([system, user], tools) > budget.input_limit:
             raise ContextOverflow(
@@ -146,7 +161,14 @@ class ContextEngine:
         state = await self.store.run("context_get", session)
         manifest = state["manifest"]
         working = state["working"]
-        relevant = {history[i].id: s for i, s in rank(user.content, [m.content for m in history])}
+        from kaki.understanding.retrieval import fused_rank
+
+        relevant = {
+            history[i].id: s
+            for i, s in fused_rank(
+                request.queries_for("history") if request else [user.content], [m.content for m in history]
+            )
+        }
         for m in history:
             old = manifest.get(str(m.id), {})
             score = float(old.get("relevance", 0.5)) * self.config.context.relevance_decay

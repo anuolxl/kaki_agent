@@ -1,6 +1,8 @@
-# Kaki v0.2 当前架构
+# Kaki v0.3 当前架构
 
 默认入口现在是本机 App。macOS 使用 pywebview 的 Cocoa/WKWebView 原生窗口，其他系统可用浏览器模式。Python 内核、Right Code 配置、上下文规划、工具与持久化沿用 v0.1。入口和使用见 [app-guide.md](app-guide.md)，界面接口契约见 [module-spec/app.md](module-spec/app.md)，内核字段见 [module-spec/core.md](module-spec/core.md)。[v0.1 技术手册](kaki-agent-guide.md)保留当时的源代码摘录与图示。
+
+v0.3 当前差量见[意图识别、Query改写与执行权限](understanding-guide.md)：接单后先构造RequestContext；真正调用工具前经过PermissionService。DecisionService统一澄清、授权与普通问答；三者是同一Runtime中的组件，不新增Agent进程或微服务。源码阅读指南与数据结构指南固定在v0.2提交，学习新链路时以本节及v0.3模块契约为准。
 
 按实际调用顺序逐段阅读代码，见 [源码阅读指南](source-reading-guide.md)。其中说明 SQLite 为同进程数据库库、AppServer 为本机界面传输层，分别展开TUI/App的启动、输入分流、输出与控制交互；公共内核只展开一次，附函数调用流程图及控制流/数据流时序图。
 
@@ -12,10 +14,15 @@ flowchart TB
     Window -->|控制：带本机 Cookie 的 HTTP 命令| Server[AppServer · 127.0.0.1 随机端口]
     Server -->|控制：校验工作区、会话、单活跃任务| Controller[AppController · 各项目 Engine]
     Controller -->|控制：initialize / run / cancel / close| Runtime[Runtime · 租约、快照、终态]
-    Runtime -->|控制：assemble + run| Loop[ContextEngine + AgentLoop]
+    Runtime -->|控制：识别/改写，最多一次额外模型尝试| Understanding[UnderstandingService]
+    Understanding -->|数据：Intent / QueryPlan / 来源| Runtime
+    Runtime -->|控制：必要时等待同一Turn的人类回答| Decision[DecisionService]
+    Runtime -->|控制：assemble + run，传RequestContext| Loop[ContextEngine + AgentLoop]
     Loop -->|数据：预算内 input / tools| Model[RightCodeProvider · Responses SSE]
     Model -->|数据：完整响应、工具请求、usage| Loop
-    Loop -->|控制：执行已落盘的 planned 工具| Tools[ToolRegistry · 文件 / 搜索 / Shell / MCP]
+    Loop -->|控制：执行已落盘的 planned 工具| Permission[PermissionService · allow / ask / deny]
+    Permission -->|控制：需要额外授权| Decision
+    Permission -->|控制：允许后重检/快照/mark_running| Tools[ToolRegistry · 文件 / 搜索 / 结构化命令 / MCP]
     Tools -->|数据：真实结果与附件引用| Loop
     Tools -->|控制：stdio| Browser[Playwright MCP 子进程]
     Runtime -->|控制：独立 git-dir 捕获 before / after| Snapshot[Checkpoint]
@@ -37,6 +44,8 @@ flowchart TB
 | app_controller.py | 工作区 Runtime、异步任务所有权、会话操作、实时投影 | 原始历史仍以 Store 为准 |
 | ui/ | 会话导航、Markdown、输入、状态条、计时、停止/退出 | 断线必须显示状态待确认 |
 | Runtime | 工作区租约、会话恢复、before/after 快照、唯一终态 | 工具成功以实际结果为准 |
+| UnderstandingService | 本地规则、联合模型理解、来源与约束校验、检索线索 | 不改原文、不授权、不执行业务工具 |
+| PermissionService / DecisionService | 能力预检、任务范围、授权与同Turn澄清 | 默认需要时询问；模型不自授权，没有OS沙箱 |
 | AgentLoop / ContextEngine | 有界模型循环、工具闭包、窗口选择与最终预算门 | 完整原始消息永远保留 |
 | Provider / Tools / BrowserMcp | Responses 流解析、工具执行、MCP owner task | 模型草稿不能当已提交工具指令 |
 | Store / Memory / Archive / Checkpoint | 事务事实、长期记忆、原文归档、文件快照 | Git 不能撤回浏览器/网络副作用 |

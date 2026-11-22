@@ -49,11 +49,13 @@ class Memory:
     def __init__(self, store: Store, config: Config):
         self.store, self.config = store, config
 
-    async def recall(self, query: str, limit: int | None = None) -> list[dict]:
+    async def recall(self, query: str, limit: int | None = None, queries=None) -> list[dict]:
         if self.config.memory.backend is None:
             return []
         rows = await self.store.run("memories", self.config.memory.user_id)
-        hits = rank(query, [r["content"] for r in rows])
+        from kaki.understanding.retrieval import fused_rank
+
+        hits = fused_rank(queries or [query], [r["content"] for r in rows])
         return [
             {**rows[i], "score": s}
             for i, s in hits[: self.config.memory.memory_top_k if limit is None else limit]
@@ -72,8 +74,8 @@ class Memory:
             "remember", self.config.memory.user_id, content, kind, source_ids, replaces
         )
 
-    async def segment(self, query: str) -> tuple[str, dict]:
-        hits = await self.recall(query)
+    async def segment(self, query: str, queries=None) -> tuple[str, dict]:
+        hits = await self.recall(query, queries=queries)
         text = "\n".join(
             f"- {excerpt(r['content'], 250)} [memory={r['id']}; sources={r['source_ids']}; version={r['version']}]"
             for r in hits
@@ -126,21 +128,23 @@ class Skills:
                     failures.append(f"{file}: {type(exc).__name__}")
         return list(entries.values()), failures
 
-    def resolve(self, query: str) -> tuple[str, dict]:
+    def resolve(self, query: str, queries=None) -> tuple[str, dict]:
         rows, failures = self.catalog()
         cfg = self.config.skill_forge
         always = [r for r in rows if r["always"]][: cfg.always_max]
+        from kaki.understanding.retrieval import fused_rank
+
         hits = (
-            rank(query, [r["id"] + " " + r["description"] + " " + r["body"][:1800] for r in rows])
+            fused_rank(
+                queries or [query],
+                [r["id"] + " " + r["description"] + " " + r["body"][:1800] for r in rows],
+                min_score=cfg.router.local_min_score,
+            )
             if cfg.router.enabled
             else []
         )
         explicit = [r for r in rows if "$" + r["id"] in query or "/skill " + r["id"] in query]
-        candidates = [
-            r
-            for r in explicit + [rows[i] for i, s in hits if s >= cfg.router.local_min_score]
-            if r not in always
-        ]
+        candidates = [r for r in explicit + [rows[i] for i, _ in hits] if r not in always]
         candidates = list({r["id"]: r for r in candidates}.values())[: cfg.router.top_k]
         active = always + (candidates[: cfg.inject_max] if cfg.injection_mode == "full_body" else [])
         references = [r for r in candidates if r not in active]
@@ -176,6 +180,12 @@ class Skills:
             raise KakiError("不在本地Skill根目录")
         if not p.is_file():
             raise KakiError("Skill引用文件不存在")
+        if any(
+            part.lower().startswith((".env", "credentials", "secrets"))
+            or part.lower().endswith((".pem", ".key", ".p12"))
+            for part in p.parts
+        ):
+            raise KakiError("Skill读取同样禁止凭据文件")
         return p.read_text()
 
 

@@ -86,7 +86,7 @@ function assistant(text, html=null){
 }
 function toolCard(tool){
   const card=el('details','tool-card');const symbol=tool.state==='running'?'◌':tool.state==='succeeded'?'✓':'!';
-  card.append(el('summary','',`${symbol} ${tool.name} · ${{running:'执行中',succeeded:'成功',unknown:'结果未知',planned:'已排队',failed:'失败',cancelled:'已停止'}[tool.state]||'未成功'}`));
+  card.append(el('summary','',`${symbol} ${tool.name} · ${{running:'执行中',succeeded:'成功',unknown:'结果未知',planned:'已排队',failed:'失败',cancelled:'已停止',denied:'已拒绝，未执行'}[tool.state]||'未成功'}`));
   card.append(el('pre','',JSON.stringify(tool.arguments||{},null,2)+(tool.preview?'\n\n'+tool.preview:'')));return card;
 }
 function renderTranscript(){
@@ -140,7 +140,7 @@ function updateStatus(){
   const warnings=own?(state.detail.live.warnings||[]):[];
   $('warning-banner').hidden=!warnings.length;$('warning-banner').textContent=warnings.length?'提示：'+[...new Set(warnings)].join('；'):'';
   const question=own?status.question:null;$('question').hidden=!question;
-  if(question){$('question-text').textContent=question.question;$('question-options').replaceChildren();for(const option of question.options){const button=el('button','',option);button.onclick=()=>sendText(option).catch(showError);$('question-options').append(button);}}
+  if(question){$('question-text').textContent=({approval:'【操作授权】',clarification:'【任务澄清】',task:'【补充信息】'}[question.kind]||'')+question.question;$('question-options').replaceChildren();for(const option of question.options){const button=el('button','',option);button.onclick=()=>sendText(option).catch(showError);$('question-options').append(button);}}
   updateElapsed();
 }
 function updateElapsed(){

@@ -48,7 +48,15 @@ async def test_app_session_management_and_persistence(workspace, config):
 @pytest.mark.asyncio
 async def test_committed_text_is_not_a_finished_turn(workspace, config):
     config.runtime.checkpoint.policy = "always"
-    app = controller(config, ScriptedProvider(ModelResponse(text="answer already visible")))
+    app = controller(
+        config,
+        ScriptedProvider(
+            ModelResponse(
+                tool_calls=[ToolCall("w", "kaki_write_file", {"path": "answer.txt", "content": "ok"})]
+            ),
+            ModelResponse(text="answer already visible"),
+        ),
+    )
     after_entered, after_release = asyncio.Event(), asyncio.Event()
 
     async def snapshot(turn, phase):
@@ -60,7 +68,7 @@ async def test_committed_text_is_not_a_finished_turn(workspace, config):
     try:
         e = await app.open_workspace(str(workspace.root))
         e.runtime.checkpoint.capture = snapshot
-        await app.send(workspace.id, e.session, "answer")
+        await app.send(workspace.id, e.session, "创建answer.txt")
         await asyncio.wait_for(after_entered.wait(), 5)
         detail = await app.detail(workspace.id, e.session)
         assert detail["messages"][-1]["text"] == "answer already visible"
@@ -154,7 +162,8 @@ async def test_shutdown_skips_new_after_snapshot_but_persists_cancel(workspace, 
     await app.send(workspace.id, sid, "wait")
     await asyncio.wait_for(p.entered.wait(), 5)
     await asyncio.wait_for(app.close(), 5)
-    assert phases == ["before"]
+    # A task blocked before its first mutation must not create workspace snapshots.
+    assert phases == []
     store = Store(workspace.state / "kaki.sqlite3", workspace.id)
     await store.open()
     try:
@@ -185,7 +194,7 @@ async def test_v1_database_migration_preserves_facts_and_backup(workspace):
     finally:
         await store.close()
     with sqlite3.connect(path) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 3
     backup = next(workspace.state.glob("old.sqlite3.v1-*.backup"))
     with sqlite3.connect(backup) as db:
         assert db.execute("SELECT title FROM sessions").fetchone()[0] == "历史对话"

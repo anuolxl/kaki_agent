@@ -14,12 +14,15 @@ from kaki.browser_mcp import BrowserMcp
 from kaki.checkpoint import Checkpoint
 from kaki.config import Config, safe_error
 from kaki.context import ContextEngine
+from kaki.decisions import DecisionService
 from kaki.loop import AgentLoop
+from kaki.permissions import PermissionService
 from kaki.provider import RightCodeProvider
 from kaki.recovery import Recovery
 from kaki.store import Store
 from kaki.tools import Tool, ToolRegistry, integer, string
-from kaki.types import Event, KakiError, TurnResult, uid
+from kaki.types import Event, InteractionRequired, KakiError, TurnResult
+from kaki.understanding import UnderstandingService
 from kaki.workspace import Workspace, WorkspaceLease
 
 
@@ -46,6 +49,9 @@ class Runtime:
         self.recovery_plan = {}
         self.browser_warning = None
         self._browser_attempted = False
+        self.decisions = DecisionService(self)
+        self.permissions = PermissionService(self)
+        self.understanding = None
 
     async def emit(self, kind: str, turn: str = "", data: dict | None = None):
         event = Event(kind, turn, data or {})
@@ -73,7 +79,10 @@ class Runtime:
                 self.config, lambda record: self.store.run("call_record", record), self.image_part
             )
         self.context = ContextEngine(self.workspace, self.store, self.config, self.provider)
-        self.tools = ToolRegistry(self.workspace, self.config, self.context, self.browser, self.ask_user)
+        self.understanding = UnderstandingService(self.config, self.provider)
+        self.tools = ToolRegistry(
+            self.workspace, self.config, self.context, self.browser, self.ask_user, self.permissions
+        )
         self.tools.add(
             Tool(
                 "kaki_artifact_read",
@@ -197,6 +206,20 @@ class Runtime:
         before = None
         after = None
         self.partial_text = ""
+        self.permissions.begin()
+        self.decisions.answered.clear()
+
+        async def before_mutation():
+            nonlocal before
+            if before is not None or not self.snapshots_enabled:
+                return
+            await self.emit("runtime.status", turn, {"text": "建立工作区基线快照…"})
+            snapshot = await self.checkpoint.capture(turn, "before")
+            before = snapshot["id"]
+            if snapshot["state"] != "ready":
+                warnings.append(snapshot.get("error", "快照失败"))
+                await self.emit("snapshot.warning", turn, snapshot)
+
         self.lease.acquire()
         try:
             accepted, user, created = await self.store.run("accept_turn", self.session_id, text, request_id)
@@ -217,13 +240,6 @@ class Runtime:
             await self.emit(
                 "turn.started", turn, {"session_id": self.session_id, "message_id": user.id, "text": text}
             )
-            if self.snapshots_enabled:
-                await self.emit("runtime.status", turn, {"text": "建立工作区基线快照…"})
-                snapshot = await self.checkpoint.capture(turn, "before")
-                before = snapshot["id"]
-                if snapshot["state"] != "ready":
-                    warnings.append(snapshot.get("error", "快照失败"))
-                    await self.emit("snapshot.warning", turn, snapshot)
             history = [m for m in await self.store.run("messages", self.session_id) if m.id != user.id]
             if text.strip() == "/compact":
                 window = await self.context.assemble(
@@ -245,8 +261,37 @@ class Runtime:
                 )
                 result = TurnResult(turn, "completed", answer, "manual_compaction")
             else:
+                await self.emit("understanding.started", turn)
+                request = await self.understanding.prepare(user, history)
+                ambiguity = self.config.understanding.ambiguity
+                rounds = 0
+                while (
+                    self.config.understanding.enabled
+                    and request.rewrite.unresolved
+                    and ambiguity.policy == "ask"
+                ):
+                    if rounds >= ambiguity.max_preflight_rounds:
+                        raise InteractionRequired(
+                            "clarification", "关键目标仍未明确，请提供具体文件、函数或动作后发起新任务"
+                        )
+                    answer = await self.decisions.request("clarification", request.rewrite.unresolved[0])
+                    request.clarifications.append(
+                        {"text": answer["text"], "message_id": answer["message_id"]}
+                    )
+                    rounds += 1
+                    self.understanding.refine(request, history)
+                await self.store.run(
+                    "trace", self.session_id, turn, "understanding.completed", request.metadata()
+                )
+                await self.emit("understanding.completed", turn, request.metadata())
                 result = await AgentLoop(self).run(
-                    turn, self.session_id, user, history, self.recovery.context(self.recovery_plan)
+                    turn,
+                    self.session_id,
+                    user,
+                    history,
+                    self.recovery.context(self.recovery_plan),
+                    request,
+                    before_mutation,
                 )
         except asyncio.CancelledError:
             if not turn:
@@ -257,6 +302,10 @@ class Runtime:
                 self.partial_text or "已取消当前任务；已完成副作用不会自动撤回。",
                 "user_cancel",
             )
+        except InteractionRequired as exc:
+            if not turn:
+                raise
+            result = TurnResult(turn, "interrupted", str(exc), exc.category)
         except Exception as exc:
             if not turn:
                 raise
@@ -273,7 +322,7 @@ class Runtime:
                     if self.question and not self.question["future"].done():
                         self.question["future"].cancel()
                     self.question = None
-                    if self.snapshots_enabled and not self.closed:
+                    if before is not None and not self.closed:
                         try:
                             snapshot = await asyncio.shield(self.checkpoint.capture(turn, "after"))
                             after = snapshot["id"]
@@ -282,7 +331,7 @@ class Runtime:
                                 await self.emit("snapshot.warning", turn, snapshot)
                         except Exception as exc:
                             warnings.append("结束快照失败：" + safe_error(exc))
-                    elif self.snapshots_enabled:
+                    elif before is not None:
                         warnings.append("程序退出，未等待结束快照；会话与已确定执行结果仍保留")
                     result.before_snapshot = before
                     result.after_snapshot = after
@@ -300,29 +349,11 @@ class Runtime:
         return result
 
     async def ask_user(self, question: str, options: list[str]) -> str:
-        if self.question:
-            raise KakiError("已有未回答的问题")
-        future = asyncio.get_running_loop().create_future()
-        identity = uid("q_")
-        self.question = {"id": identity, "future": future, "question": question, "options": options}
-        await self.store.run(
-            "question", self.active_turn, {"question_id": identity, "question": question, "options": options}
-        )
-        await self.emit(
-            "question.requested",
-            self.active_turn,
-            {"question_id": identity, "question": question, "options": options},
-        )
-        try:
-            return await future
-        finally:
-            self.question = None
-            await self.store.run("question", self.active_turn, None)
+        response = await self.decisions.request("task", question, options)
+        return response["text"]
 
-    async def answer(self, question_id: str, text: str):
-        if not self.question or self.question["id"] != question_id:
-            raise KakiError("问题已过期或不属于当前任务")
-        self.question["future"].set_result(text)
+    async def answer(self, question_id: str, text: str, choice: str | None = None):
+        await self.decisions.answer(question_id, text, choice)
 
     async def cancel(self):
         if self.active and not self.active.done():

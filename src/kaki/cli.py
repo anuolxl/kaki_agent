@@ -261,8 +261,7 @@ def run_once(
             elif e.type == "tool.started":
                 console.print("\n[dim]工具 " + e.data["name"] + "[/dim]")
             elif e.type == "question.requested":
-                answer = await asyncio.to_thread(input, "\n" + e.data["question"] + "\n> ")
-                await rt.answer(e.data["question_id"], answer)
+                console.print(e.data["question"], markup=False)
 
         rt.listeners.append(event)
         try:
@@ -277,8 +276,8 @@ def run_once(
             await rt.close()
 
     status = asyncio.run(go())
-    if status == "failed":
-        raise typer.Exit(1)
+    if status != "completed":
+        raise typer.Exit(1 if status == "failed" else 2)
 
 
 @app.command()

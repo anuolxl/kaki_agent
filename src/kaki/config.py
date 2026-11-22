@@ -119,6 +119,58 @@ class SkillOptions(Options):
     injection_mode: Literal["full_body", "summary"] = "full_body"
 
 
+class IntentOptions(Options):
+    strategy: Literal["rules", "llm", "hybrid"] = "hybrid"
+
+
+class RewriteOptions(Options):
+    strategy: Literal["local", "llm", "hybrid"] = "hybrid"
+    targets: list[Literal["skills", "history", "memory", "code"]] = Field(
+        default_factory=lambda: ["skills", "history", "memory", "code"]
+    )
+    max_queries_per_target: int = Field(default=2, ge=1, le=2)
+
+
+class UnderstandingModelOptions(Options):
+    model: str | None = None
+    timeout_seconds: float = Field(default=10, gt=0, le=60)
+    max_extra_calls_per_turn: Literal[1] = 1
+    max_attempts: Literal[1] = 1
+    input_tokens: int = Field(default=4096, ge=512, le=8192)
+    output_tokens: int = Field(default=1024, ge=256, le=2048)
+
+
+class AmbiguityOptions(Options):
+    policy: Literal["ask", "model_decide"] = "ask"
+    max_preflight_rounds: int = Field(default=2, ge=1, le=3)
+    on_unresolved: Literal["interrupt"] = "interrupt"
+
+
+class UnderstandingOptions(Options):
+    enabled: bool = True
+    intent: IntentOptions = Field(default_factory=IntentOptions)
+    rewrite: RewriteOptions = Field(default_factory=RewriteOptions)
+    llm: UnderstandingModelOptions = Field(default_factory=UnderstandingModelOptions)
+    ambiguity: AmbiguityOptions = Field(default_factory=AmbiguityOptions)
+
+
+class ShellPermissions(Options):
+    mode: Literal["structured_only"] = "structured_only"
+    unknown_command: Literal["deny"] = "deny"
+
+
+class McpPermissions(Options):
+    unknown_tool: Literal["ask", "deny"] = "ask"
+
+
+class PermissionOptions(Options):
+    mode: Literal["task_scoped", "read_only", "ask"] = "task_scoped"
+    default_decision: Literal["ask", "deny"] = "ask"
+    grant_scopes: list[Literal["once", "turn"]] = Field(default_factory=lambda: ["once", "turn"])
+    shell: ShellPermissions = Field(default_factory=ShellPermissions)
+    mcp: McpPermissions = Field(default_factory=McpPermissions)
+
+
 class Config(Options):
     agents: Agents = Field(default_factory=Agents)
     providers: Providers = Field(default_factory=Providers)
@@ -127,6 +179,8 @@ class Config(Options):
     runtime: RuntimeOptions = Field(default_factory=RuntimeOptions)
     tools: ToolsOptions = Field(default_factory=ToolsOptions)
     skill_forge: SkillOptions = Field(default_factory=SkillOptions)
+    understanding: UnderstandingOptions = Field(default_factory=UnderstandingOptions)
+    permissions: PermissionOptions = Field(default_factory=PermissionOptions)
 
     def validate_credentials(self):
         if not self.providers.openai.api_key.get_secret_value():

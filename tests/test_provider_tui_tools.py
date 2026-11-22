@@ -109,12 +109,13 @@ async def test_tool_guards_timeout_and_failed_test(workspace, config):
         file = workspace.root / "a.py"
         file.write_text("same\nsame\n")
         bad = await rt.tools.execute(
-            ToolCall("e", "kaki_edit_file", {"path": "a.py", "old_text": "same", "new_text": "new"}), {}
+            ToolCall("e", "kaki_edit_file", {"path": "a.py", "old_text": "same", "new_text": "new"}),
+            {"human_text": "修改a.py"},
         )
         assert bad.failed and "不唯一" in bad.text
         changed = await rt.tools.execute(
             ToolCall("e2", "kaki_write_file", {"path": "a.py", "content": "new", "expected_hash": "wrong"}),
-            {},
+            {"human_text": "修改a.py"},
         )
         assert changed.failed and file.read_text() == "same\nsame\n"
         denied = await rt.tools.execute(ToolCall("x", "kaki_exec", {"command": "git push origin master"}), {})

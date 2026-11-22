@@ -164,6 +164,7 @@ class RightCodeProvider:
         kind: str = "main",
         on_delta: Delta | None = None,
         tool_choice: Any = "auto",
+        max_attempts: int = 4,
     ) -> ModelResponse:
         model = model or self.config.agents.defaults.model
         api_model = model.removeprefix("openai/")
@@ -182,7 +183,7 @@ class RightCodeProvider:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = tool_choice
         # No implicit fallback to another model or endpoint. Only unsupported optional parameters may be omitted.
-        for attempt in range(4):
+        for attempt in range(max_attempts):
             call_id = uid("llm_")
             started = now()
             visible = False
@@ -273,10 +274,14 @@ class RightCodeProvider:
                     ),
                     None,
                 )
-                if optional and not visible and attempt < 3:
+                if optional and not visible and attempt + 1 < max_attempts:
                     self.disabled_parameters.add(optional)
                     continue
-                if not visible and category in ("network", "rate_limit", "upstream") and attempt < 2:
+                if (
+                    not visible
+                    and category in ("network", "rate_limit", "upstream")
+                    and attempt < min(2, max_attempts - 1)
+                ):
                     await asyncio.sleep(min(2**attempt, 4))
                     continue
                 public = safe_error(exc)
