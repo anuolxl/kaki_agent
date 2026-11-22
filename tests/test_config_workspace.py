@@ -52,7 +52,16 @@ def test_workspace_escape_and_exclusive_lease(workspace, tmp_path):
     outside = tmp_path / "outside"
     outside.write_text("private")
     (workspace.root / "link").symlink_to(outside)
-    for path in ["../outside", "link", ".git/config", ".env", "service.key"]:
+    for path in [
+        "../outside",
+        "link",
+        ".git/config",
+        ".env",
+        ".env.prod",
+        ".kaki/config.json",
+        "credentials.json",
+        "service.key",
+    ]:
         with pytest.raises(KakiError):
             workspace.path(path)
     first, second = WorkspaceLease(workspace.state), WorkspaceLease(workspace.state)
@@ -69,3 +78,28 @@ def test_workspace_escape_and_exclusive_lease(workspace, tmp_path):
 def test_configuration_refuses_other_mcp():
     with pytest.raises(ValueError):
         Config.model_validate({"tools": {"mcpServers": {"other": {}}}})
+
+
+def test_understanding_config_aliases_switches_and_blank_env(tmp_path, monkeypatch):
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "understanding": {
+                    "intent": {"strategy": "rules"},
+                    "rewrite": {"strategy": "llm"},
+                    "llm": {"timeoutSeconds": 10},
+                },
+                "permissions": {"mode": "read_only"},
+            }
+        )
+    )
+    monkeypatch.setenv("KAKI_UNDERSTANDING__INTENT__STRATEGY", "")
+    config = load_config(path)
+    assert config.understanding.intent.strategy == "rules"
+    assert config.understanding.rewrite.strategy == "llm" and config.understanding.llm.timeout_seconds == 10
+    assert config.permissions.mode == "read_only"
+    monkeypatch.setenv("KAKI_UNDERSTANDING__INTENT__STRATEGY", "hybrid")
+    assert load_config(path).understanding.intent.strategy == "hybrid"
+    with pytest.raises(ValueError):
+        Config.model_validate({"understanding": {"llm": {"maxAttempts": 2}}})

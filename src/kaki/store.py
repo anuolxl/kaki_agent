@@ -48,6 +48,11 @@ CREATE TABLE IF NOT EXISTS memories(
 CREATE TABLE IF NOT EXISTS snapshots(
  id TEXT PRIMARY KEY, turn_id TEXT NOT NULL, phase TEXT NOT NULL, state TEXT NOT NULL,
  commit_id TEXT, metadata TEXT NOT NULL, created TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS decisions(
+ id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id),
+ turn_id TEXT NOT NULL REFERENCES turns(id), kind TEXT NOT NULL, state TEXT NOT NULL,
+ question TEXT NOT NULL, options TEXT NOT NULL, operation TEXT NOT NULL,
+ response TEXT, created TEXT NOT NULL, ended TEXT);
 CREATE INDEX IF NOT EXISTS messages_session ON messages(session_id,seq);
 CREATE INDEX IF NOT EXISTS turns_session ON turns(session_id,created);
 CREATE INDEX IF NOT EXISTS events_turn ON events(turn_id,seq);
@@ -88,11 +93,11 @@ class Store:
             self.db.execute("PRAGMA journal_mode=WAL")
             self.db.execute("PRAGMA synchronous=FULL")
             version = self.db.execute("PRAGMA user_version").fetchone()[0]
-            if version > 2:
+            if version > 3:
                 raise KakiError("状态数据库版本比当前Kaki新，请不要降级覆盖")
             # Preserve a SQLite-consistent copy, including WAL data, before adding App metadata.
-            if version == 1:
-                backup = self.path.with_name(self.path.name + ".v1-" + uid()[:12] + ".backup")
+            if version in (1, 2):
+                backup = self.path.with_name(self.path.name + f".v{version}-" + uid()[:12] + ".backup")
                 descriptor = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
                 os.close(descriptor)
                 with sqlite3.connect(backup) as connection:
@@ -101,7 +106,7 @@ class Store:
             columns = {row[1] for row in self.db.execute("PRAGMA table_info(sessions)")}
             if "archived" not in columns:
                 self.db.execute("ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
-            self.db.execute("PRAGMA user_version=2")
+            self.db.execute("PRAGMA user_version=3")
             self.db.commit()
             os.chmod(self.path, 0o600)
         except sqlite3.DatabaseError as exc:
@@ -289,7 +294,9 @@ class Store:
             row = self.db.execute("SELECT * FROM tool_runs WHERE id=? AND turn_id=?", (run, turn)).fetchone()
             if not row or row["state"] not in ("running", "planned"):
                 raise KakiError("工具结果已经提交或已标记未知")
-            state = "failed" if result.failed else "succeeded"
+            state = "denied" if result.denied else "failed" if result.failed else "succeeded"
+            if result.denied and (result.executed or row["state"] != "planned"):
+                raise KakiError("拒绝执行必须发生在工具启动之前")
             self.db.execute(
                 "UPDATE tool_runs SET state=?,result_json=?,ended=? WHERE id=?",
                 (state, dumps(asdict(result)), now(), run),
@@ -337,6 +344,10 @@ class Store:
         with self.db:
             self._assert_active(result.turn_id)
             self._pending_observations(result.turn_id, reason=result.stop_reason)
+            self.db.execute(
+                "UPDATE decisions SET state='expired',ended=? WHERE turn_id=? AND state='pending'",
+                (now(), result.turn_id),
+            )
             row = self.db.execute("SELECT session_id FROM turns WHERE id=?", (result.turn_id,)).fetchone()
             self.db.execute(
                 "UPDATE turns SET status=?,stop_reason=?,error=?,result_json=?,before_snapshot=?,after_snapshot=?,ended=? WHERE id=?",
@@ -363,6 +374,10 @@ class Store:
                 (session,),
             ).fetchall()
             for row in rows:
+                self.db.execute(
+                    "UPDATE decisions SET state='expired',ended=? WHERE turn_id=? AND state='pending'",
+                    (now(), row["id"]),
+                )
                 self._pending_observations(row["id"], reason="上次进程退出")
                 self.db.execute(
                     "UPDATE model_calls SET status='interrupted',ended=? WHERE turn_id=? AND status='running'",
@@ -396,6 +411,69 @@ class Store:
                 "UPDATE turns SET status=? WHERE id=?", ("waiting_user" if question else "running", turn)
             )
             self._event("", turn, "question.requested" if question else "question.answered", question or {})
+
+    def _decision_create(self, identity, session, turn, kind, question, options, operation):
+        with self.db:
+            self._assert_active(turn)
+            if self.db.execute(
+                "SELECT 1 FROM decisions WHERE turn_id=? AND state='pending'", (turn,)
+            ).fetchone():
+                raise KakiError("已有未回答的问题")
+            self.db.execute(
+                "INSERT INTO decisions VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    identity,
+                    session,
+                    turn,
+                    kind,
+                    "pending",
+                    question,
+                    dumps(options),
+                    dumps(operation),
+                    None,
+                    now(),
+                    None,
+                ),
+            )
+            self.db.execute("UPDATE turns SET status='waiting_user' WHERE id=?", (turn,))
+            self._event(session, turn, "question.requested", {"question_id": identity, "kind": kind})
+
+    def _decision_answer(self, identity, session, turn, response):
+        with self.db:
+            self._assert_active(turn)
+            row = self.db.execute(
+                "SELECT * FROM decisions WHERE id=? AND session_id=? AND turn_id=?", (identity, session, turn)
+            ).fetchone()
+            if not row or row["state"] != "pending":
+                raise KakiError("问题已过期或已经回答")
+            self.db.execute(
+                "UPDATE decisions SET state='answered',response=?,ended=? WHERE id=?",
+                (dumps(response), now(), identity),
+            )
+            self.db.execute("UPDATE turns SET status='running' WHERE id=?", (turn,))
+            if row["kind"] == "clarification":
+                message = self._append(session, turn, Message("user", response["text"]))
+                response = {**response, "message_id": message.id}
+            self._event(session, turn, "question.answered", {"question_id": identity, **response})
+            return response
+
+    def _decision_expire(self, identity):
+        with self.db:
+            self.db.execute(
+                "UPDATE decisions SET state='expired',ended=? WHERE id=? AND state='pending'",
+                (now(), identity),
+            )
+
+    def _decisions(self, turn):
+        return [
+            dict(r)
+            for r in self.db.execute("SELECT * FROM decisions WHERE turn_id=? ORDER BY rowid", (turn,))
+        ]
+
+    def _trace(self, session, turn, kind, data):
+        with self.db:
+            self._assert_active(turn)
+            self._event(session, turn, kind, data)
 
     def _call_record(self, record: dict):
         with self.db:

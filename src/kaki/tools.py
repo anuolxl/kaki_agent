@@ -6,7 +6,6 @@ import asyncio
 import hashlib
 import json
 import os
-import re
 import signal
 import time
 from collections.abc import Awaitable, Callable
@@ -16,7 +15,7 @@ from pathlib import Path
 from jsonschema import Draft202012Validator
 
 from kaki.config import Config, safe_error
-from kaki.types import KakiError, ToolCall, ToolResult
+from kaki.types import InteractionRequired, KakiError, ToolCall, ToolResult
 from kaki.workspace import Workspace
 
 from .context.tokens import count_text, excerpt
@@ -60,7 +59,7 @@ def integer(description="", minimum=0, maximum=10000):
 
 
 class ToolRegistry:
-    def __init__(self, workspace: Workspace, config: Config, context, browser, ask):
+    def __init__(self, workspace: Workspace, config: Config, context, browser, ask, permissions=None):
         self.workspace, self.config, self.context, self.browser, self.ask = (
             workspace,
             config,
@@ -69,6 +68,7 @@ class ToolRegistry:
             ask,
         )
         self.tools = {}
+        self.permissions = permissions
         self._builtins()
 
     def add(self, tool: Tool):
@@ -98,7 +98,16 @@ class ToolRegistry:
             Tool(
                 "kaki_search",
                 "Search literal text or regex inside workspace files; returns paths and line numbers.",
-                {"query": string(), "path": string(), "glob": string(), "regex": {"type": "boolean"}},
+                {
+                    "query": string(),
+                    "path": string(),
+                    "glob": string(),
+                    "regex": {"type": "boolean"},
+                    "use_task_queries": {
+                        "type": "boolean",
+                        "description": "Opt in to one task-derived literal search hint, within the same path/glob. Default false.",
+                    },
+                },
                 ["query"],
                 "READ",
                 self.search,
@@ -128,7 +137,7 @@ class ToolRegistry:
             ),
             Tool(
                 "kaki_exec",
-                "Run a shell command in workspace, with timeout and real exit code. Follow repository test instructions. No production deployment or Git push.",
+                "Run one supported argv command without a shell: pwd/echo, git status/diff/ls-files, pytest/python -m unittest/go test/node --test/npm test/cargo test/make test. No pipes, redirects, scripts or arbitrary commands. Test execution requires user task authorization or approval.",
                 {"command": string(), "working_dir": string(), "timeout": integer("seconds", 1, 600)},
                 ["command"],
                 "EXECUTE",
@@ -203,12 +212,17 @@ class ToolRegistry:
             self.add(Tool(name, t["description"], {}, [], "EXTERNAL", call, schema=t["parameters"]))
 
     def definitions(self):
-        return [t.definition() for t in self.tools.values()]
+        from kaki.permissions import BLOCKED_BROWSER_TOOLS
 
-    async def execute(self, call: ToolCall, ctx: dict) -> ToolResult:
+        excluded = {"kaki_browser_" + suffix for suffix in BLOCKED_BROWSER_TOOLS}
+        if self.config.permissions.mode == "read_only":
+            excluded |= {"kaki_write_file", "kaki_edit_file", "kaki_remember"}
+        return [t.definition() for t in self.tools.values() if t.name not in excluded]
+
+    async def prepare(self, call, ctx):
         tool = self.tools.get(call.name)
         if not tool:
-            return ToolResult("工具不存在：" + call.name, failed=True)
+            return None, None, ToolResult("工具不存在：" + call.name, failed=True, executed=False)
         args = dict(call.arguments)
         try:
             for key, prop in tool.parameters().get("properties", {}).items():
@@ -218,7 +232,61 @@ class ToolRegistry:
                 Draft202012Validator(tool.parameters()).iter_errors(args), key=lambda e: str(e.path)
             )
             if errors:
-                return ToolResult("参数校验失败：" + "; ".join(e.message for e in errors)[:1200], failed=True)
+                return (
+                    None,
+                    None,
+                    ToolResult(
+                        "参数校验失败：" + "; ".join(e.message for e in errors)[:1200],
+                        failed=True,
+                        executed=False,
+                    ),
+                )
+            if self.permissions is None:
+                return (
+                    None,
+                    None,
+                    ToolResult("未初始化权限服务，拒绝执行", failed=True, denied=True, executed=False),
+                )
+            if call.name == "kaki_ask_user" and not self.permissions.runtime.interactive:
+                raise InteractionRequired("clarification", args["question"])
+            operation = self.permissions.prepare(call, args)
+            answer = await self.permissions.authorize(operation, ctx, args)
+            if isinstance(answer, ToolResult):
+                return None, None, answer
+            return ToolCall(call.id, call.name, args), operation, answer
+        except InteractionRequired:
+            raise
+        except KakiError as exc:
+            return (
+                None,
+                None,
+                ToolResult("权限或路径拒绝：" + safe_error(exc), failed=True, denied=True, executed=False),
+            )
+
+        except (ValueError, OSError) as exc:
+            return None, None, ToolResult("操作预检失败：" + safe_error(exc), failed=True, executed=False)
+
+    async def execute(self, call: ToolCall, ctx: dict, *, on_start=None, prepared=None) -> ToolResult:
+        prepared = prepared or await self.prepare(call, ctx)
+        call, operation, decision = prepared
+        if isinstance(decision, ToolResult):
+            return decision
+        tool = self.tools[call.name]
+        args = call.arguments
+        entered = False
+        try:
+            # INVARIANT: recheck canonical targets after human approval and before actual I/O.
+            if self.permissions.prepare(call, args) != operation:
+                return ToolResult(
+                    "授权后操作目标已改变，请重新读取", failed=True, denied=True, executed=False
+                )
+            if operation.capability in {"workspace.write", "test.execute"} and ctx.get("before_mutation"):
+                await ctx["before_mutation"]()
+            if self.permissions.prepare(call, args) != operation:
+                return ToolResult("快照期间目标已改变，未执行", failed=True, denied=True, executed=False)
+            if on_start:
+                await on_start(call)
+            entered = True
             if call.name == "kaki_ask_user":
                 result = await tool.execute(args, ctx)
             else:
@@ -227,13 +295,21 @@ class ToolRegistry:
                     if tool.effect == "EXECUTE"
                     else 120
                 )
-                result = await asyncio.wait_for(tool.execute(args, ctx), timeout)
+                result = await asyncio.wait_for(
+                    tool.execute(args, {**ctx, "prepared_operation": operation}), timeout
+                )
+            result.decision_id = decision
             return self.bound(result, call.name)
         except asyncio.CancelledError:
             raise
+        except InteractionRequired:
+            raise
         except Exception as exc:
             return ToolResult(
-                "工具失败：" + safe_error(exc) + "\n请分析真实错误并更换方法，不要重复无效调用。", failed=True
+                "工具失败：" + safe_error(exc) + "\n请分析真实错误并更换方法，不要重复无效调用。",
+                failed=True,
+                executed=entered,
+                decision_id=decision,
             )
 
     def bound(self, result: ToolResult, name: str) -> ToolResult:
@@ -249,9 +325,8 @@ class ToolRegistry:
         return result
 
     async def execute_many(self, calls: list[ToolCall], ctx: dict, on_start, on_complete) -> list[ToolResult]:
-        async def one(c):
-            await on_start(c)
-            result = await self.execute(c, ctx)
+        async def one(c, prepared):
+            result = await self.execute(c, ctx, on_start=on_start, prepared=prepared)
             await on_complete(c, result)
             return result
 
@@ -267,12 +342,15 @@ class ToolRegistry:
                         break
                     end += 1
                 for at in range(i, end, 4):
+                    batch = calls[at : min(at + 4, end)]
+                    # Preflight serially so concurrent reads never create concurrent human decisions.
+                    prepared = [await self.prepare(c, ctx) for c in batch]
                     async with asyncio.TaskGroup() as group:
-                        tasks = [group.create_task(one(c)) for c in calls[at : min(at + 4, end)]]
+                        tasks = [group.create_task(one(c, p)) for c, p in zip(batch, prepared, strict=True)]
                     results.extend(task.result() for task in tasks)
                 i = end
             else:
-                results.append(await one(calls[i]))
+                results.append(await one(calls[i], await self.prepare(calls[i], ctx)))
                 i += 1
         return results
 
@@ -322,12 +400,30 @@ class ToolRegistry:
             "!.git/**",
             "--glob",
             "!.env*",
+            "--glob",
+            "!**/*.{pem,key,p12}",
+            "--glob",
+            "!**/{credentials,secrets}*",
+            "--glob",
+            "!**/{.kaki,.agents,.codex}/**",
         ]
         if not a.get("regex", False):
             args += ["--fixed-strings"]
         if a.get("glob"):
             args += ["--glob", a["glob"]]
-        args += ["--", a["query"], str(path)]
+        queries = [a["query"]]
+        request = ctx.get("request")
+        if a.get("use_task_queries") and not a.get("regex") and request:
+            queries += [q for q in request.queries_for("code")[1:] if q != a["query"]][:1]
+        results = []
+        failed = False
+        for query in queries:
+            result = await self._search_once([*args, "--", query, str(path)])
+            failed = failed or result.failed
+            results.extend(result.text.splitlines())
+        return ToolResult("\n".join(dict.fromkeys(results)) or "No matches found", failed=failed)
+
+    async def _search_once(self, args):
         try:
             process = await asyncio.create_subprocess_exec(
                 *args, cwd=self.workspace.root, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
@@ -398,18 +494,10 @@ class ToolRegistry:
     async def exec(self, a, ctx):
         command = a["command"]
         cwd = self.workspace.path(a.get("working_dir", "."))
-        denied = [
-            r"\bgit\s+(?:push|reset\s+--hard|clean\s+-[a-zA-Z]*f)",
-            r"\brm\s+-[^\n]*r[^\n]*f",
-            r"\bsudo\b",
-            r"\bkubectl\b",
-            r"\b(?:printenv)\b",
-            r"(?:^|[;&|])\s*env\s*$",
-            r"\.kaki/config\.json",
-            r"\.pico/config\.json",
-        ]
-        if any(re.search(p, command, re.I) for p in denied):
-            raise KakiError("命令超出默认本地编码权限；请由用户显式在终端执行该高影响操作")
+        operation = ctx.get("prepared_operation")
+        if operation is None:
+            raise KakiError("命令必须先通过权限预检")
+        argv = operation.argv
         env = {
             k: v
             for k, v in os.environ.items()
@@ -439,10 +527,10 @@ class ToolRegistry:
         }
         if self.config.tools.exec.path_append:
             env["PATH"] = env.get("PATH", "") + os.pathsep + self.config.tools.exec.path_append
+        if argv[0] == "git":
+            env.update(GIT_OPTIONAL_LOCKS="0", GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL="/dev/null")
         process = await asyncio.create_subprocess_exec(
-            "/bin/bash",
-            "-c",
-            command,
+            *argv,
             cwd=cwd,
             env=env,
             stdout=asyncio.subprocess.PIPE,
@@ -484,6 +572,7 @@ class ToolRegistry:
             raise
         payload = {
             "command": command,
+            "argv": list(argv),
             "cwd": str(cwd),
             "exit_code": process.returncode,
             "stdout": out.decode(errors="replace"),
@@ -497,7 +586,11 @@ class ToolRegistry:
         )
 
     async def ask_user(self, a, ctx):
-        return ToolResult(await self.ask(a["question"], a.get("options", [])))
+        answer = await self.ask(a["question"], a.get("options", []))
+        # A business clarification is evidence, not approval, and invalidates stale code-search hints.
+        if ctx.get("request"):
+            ctx["request"].rewrite.queries["code"] = [ctx["user_text"]]
+        return ToolResult(answer)
 
     async def skill_read(self, a, ctx):
         return ToolResult(await asyncio.to_thread(self.context.skills.read, a["path"]))
@@ -506,15 +599,13 @@ class ToolRegistry:
         return ToolResult(json.dumps(await self.context.memory.recall(a["query"]), ensure_ascii=False))
 
     async def remember(self, a, ctx):
-        if not re.search(r"记住|remember|保存.*记忆", ctx.get("user_text", ""), re.I):
-            raise KakiError("长期记忆需要当前用户明确要求记住；普通任务结果保留在Session即可")
         identity = await self.context.memory.remember(
             a["content"], [ctx["user_message_id"]], replaces=a.get("replaces")
         )
         return ToolResult("已保存项目记忆：" + identity)
 
     async def history_search(self, a, ctx):
-        from .context.knowledge import rank
+        from .understanding.retrieval import fused_rank
 
         messages = await ctx["store"].run("messages", ctx["session_id"])
         state = await ctx["store"].run("context_get", ctx["session_id"])
@@ -525,7 +616,7 @@ class ToolRegistry:
                 "snippet": excerpt(messages[i].content, 300),
                 "archive_ref": state["manifest"].get(str(messages[i].id), {}).get("archive_ref"),
             }
-            for i, _ in rank(a["query"], [m.content for m in messages])[:10]
+            for i, _ in fused_rank([a["query"]], [m.content for m in messages])[:10]
         ]
         return ToolResult(json.dumps(hits, ensure_ascii=False))
 

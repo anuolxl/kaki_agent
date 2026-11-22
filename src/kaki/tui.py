@@ -172,6 +172,12 @@ class KakiApp(App):
                     self.query_one("#status", Static).update(
                         f"模型调用 · 第{d['iteration']}轮 · 当前输入估算{self.current_estimate} tokens"
                     )
+                elif event.type == "understanding.started":
+                    self.query_one("#status", Static).update("正在识别任务与整理检索线索…")
+                elif event.type == "understanding.completed":
+                    self.query_one("#tools", RichLog).write(
+                        "任务理解：" + json.dumps(d, ensure_ascii=False)[:800]
+                    )
                 elif event.type == "model.delta":
                     key = "draft-" + d["draft_id"]
                     self.pending[key] = self.pending.get(key, "") + d["text"]
@@ -208,7 +214,14 @@ class KakiApp(App):
                     await self.bubble(
                         "question-" + self.question_id,
                         "assistant",
-                        d["question"] + "\n" + " / ".join(d.get("options", [])),
+                        {
+                            "approval": "【操作授权】",
+                            "clarification": "【任务澄清】",
+                            "task": "【补充信息】",
+                        }.get(d.get("kind"), "")
+                        + d["question"]
+                        + "\n"
+                        + " / ".join(d.get("options", [])),
                     )
                     self.query_one("#status", Static).update("等待你的回答；输入框中直接回复，或Ctrl+C取消")
                 elif event.type == "turn.finalizing":
@@ -281,8 +294,8 @@ class KakiApp(App):
         try:
             if self.question_id:
                 identity = self.question_id
-                self.question_id = None
                 await self.runtime.answer(identity, text)
+                self.question_id = None
                 return
             if self.undo_plan is not None:
                 plan = self.undo_plan
@@ -311,7 +324,8 @@ class KakiApp(App):
         except Exception as exc:
             self.query_one("#status", Static).update(safe_error(exc))
             self.query_one("#tools", RichLog).write(safe_error(exc))
-            self.turn_done.set()
+            if not self.runtime.active or self.runtime.active.done():
+                self.turn_done.set()
 
     @work
     async def watch_turn(self, task):

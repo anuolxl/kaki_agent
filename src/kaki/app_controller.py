@@ -78,7 +78,11 @@ class Engine:
             "warnings": self.warnings[:],
             "result": self.result,
             "pending_text": self.pending,
-            "question": {k: q[k] for k in ("id", "question", "options")} if q else None,
+            "question": {
+                k: q[k] for k in ("id", "question", "options", "kind", "operation", "session_id", "turn_id")
+            }
+            if q
+            else None,
         }
 
 
@@ -157,6 +161,10 @@ class AppController:
                 engine.pending = ""
             case "model.started":
                 engine.phase = "model"
+            case "understanding.started":
+                engine.phase = "preparing"
+            case "understanding.completed" | "question.answered":
+                engine.phase = "running"
             case "model.delta":
                 key = data["draft_id"]
                 engine.draft[key] = engine.draft.get(key, "") + data["text"]
@@ -176,7 +184,7 @@ class AppController:
                 engine.tools[data["tool_call_id"]] = {
                     **engine.tools.get(data["tool_call_id"], {}),
                     **data,
-                    "state": "failed" if data["failed"] else "succeeded",
+                    "state": data.get("state", "failed" if data["failed"] else "succeeded"),
                 }
             case "question.requested":
                 engine.phase = "waiting_user"
@@ -400,13 +408,13 @@ class AppController:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
 
-    async def answer(self, workspace, session, question_id, text):
+    async def answer(self, workspace, session, question_id, text, choice=None):
         e = self.engine(workspace)
         if e.session != session or not e.busy:
             raise KakiError("该会话没有待回答的问题")
         if not text.strip() or len(text) > 100000:
             raise KakiError("回答不能为空或过长")
-        await e.runtime.answer(question_id, text)
+        await e.runtime.answer(question_id, text, choice)
         e.phase = "running"
         self.notify(e)
 
