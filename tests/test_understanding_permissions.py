@@ -414,3 +414,29 @@ async def test_tool_catalog_matches_hard_denials_and_read_only_ceiling(workspace
         assert "read_only" in prefix.content and "未开放" in prefix.content
     finally:
         await rt.close()
+
+
+async def test_uv_test_runner_is_actually_executed(workspace, config, monkeypatch):
+    import os
+
+    runner_dir = workspace.root / "runner-bin"
+    runner_dir.mkdir()
+    runner = runner_dir / "uv"
+    runner.write_text("#!/bin/sh\nprintf 'UV_RUNNER_REACHED:%s\\n' \"$*\"\n")
+    runner.chmod(0o755)
+    monkeypatch.setenv("PATH", str(runner_dir) + os.pathsep + os.environ["PATH"])
+    rt = Runtime(workspace, config, provider=ScriptedProvider())
+    try:
+        await rt.initialize()
+        result = await rt.tools.execute(
+            ToolCall("uv", "kaki_exec", {"command": "uv run python3 -m unittest -v"}),
+            {"human_text": "运行测试"},
+        )
+        payload = json.loads(result.text)
+        assert not result.failed and result.executed
+        assert payload["argv"][:2] == ["uv", "run"]
+        assert "UV_RUNNER_REACHED:run python3 -m unittest -v" in payload["stdout"]
+        with pytest.raises(KakiError):
+            structured_command("uv run git status")
+    finally:
+        await rt.close()

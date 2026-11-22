@@ -54,11 +54,14 @@ def structured_command(command):
         raise KakiError("命令引号不完整") from None
     if not argv:
         raise KakiError("命令不能为空")
+    runner = []
     if argv[0] == "uv" and argv[1:2] == ["run"]:
-        argv = argv[2:]
+        runner, argv = argv[:2], argv[2:]
     if not argv or "/" in argv[0] or "\\" in argv[0]:
         raise KakiError("命令必须使用支持的可执行程序名")
     name = argv[0]
+    if runner and name in {"pwd", "echo", "git"}:
+        raise KakiError("uv run只用于受支持的测试入口，不作为只读命令包装器")
     if name in {"pwd", "echo"}:
         if name == "pwd" and len(argv) != 1:
             raise KakiError("pwd不接受额外参数")
@@ -108,7 +111,7 @@ def structured_command(command):
             for a in argv[1:]
         ):
             raise KakiError("测试参数不能指定工作区外路径或重定向输出")
-        return tuple(argv), "test.execute"
+        return tuple([*runner, *argv]), "test.execute"
     raise KakiError("不支持此命令模板；请使用文件/搜索工具，或由用户在终端执行")
 
 
