@@ -11,10 +11,12 @@ v0.3 新增意图识别、Query改写与操作授权。当前机制、配置切�
 macOS 需要 Python3.12、uv、Git；编码搜索需要 ripgrep，浏览器 MCP 需要 Node/npm 和 Chrome。安装器生成用户级启动器，依赖仍由 uv 管理，无需管理员权限。
 
 ```bash
-cd /Users/bytedance/github/kaki_agent
+cd /Users/bytedance/github/kaki_agent-v0.3
 uv python install 3.12
 uv sync --python 3.12 --extra dev --locked
-uv tool install --editable /Users/bytedance/github/kaki_agent --python 3.12 --force
+mkdir -p "$HOME/.kaki"
+uv export --locked --no-dev --no-emit-project --no-hashes --format requirements.txt --output-file "$HOME/.kaki/runtime-constraints.txt"
+uv tool install --editable /Users/bytedance/github/kaki_agent-v0.3 --python 3.12 --force --constraints "$HOME/.kaki/runtime-constraints.txt"
 uv run python scripts/install_macos_app.py
 open "$HOME/Applications/Kaki.app"
 ```
@@ -135,7 +137,7 @@ kaki-agent -C /path/to/repo tui
 “App 已经运行”表示单实例复用；原生窗口会显示。如果启动/退出阶段暂不可访问，等当前动作完成再重试，不要并行启动多份。模型401/403先核对 Right Code 渠道和密钥状态；MCP连接失败会有提示，不影响原有本地文件/Shell工具。大仓库有嵌套 Git/worktree 时，快照警告应单独处理，不能据此说模型认证失败。
 
 ```bash
-cd /Users/bytedance/github/kaki_agent
+cd /Users/bytedance/github/kaki_agent-v0.3
 uv run ruff check .
 uv run ruff format --check .
 uv run python -m compileall -q src

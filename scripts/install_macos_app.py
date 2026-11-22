@@ -11,6 +11,8 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
+from kaki import __version__
+
 
 def install(destination: Path, executable: Path):
     if sys.platform != "darwin":
@@ -52,8 +54,8 @@ def install(destination: Path, executable: Path):
         "CFBundleIdentifier": "io.kaki.agent",
         "CFBundleExecutable": "Kaki",
         "CFBundlePackageType": "APPL",
-        "CFBundleShortVersionString": "0.2.0",
-        "CFBundleVersion": "2",
+        "CFBundleShortVersionString": __version__,
+        "CFBundleVersion": __version__,
         "CFBundleIconFile": "Kaki.icns",
         "NSHighResolutionCapable": True,
         "LSMinimumSystemVersion": "12.0",

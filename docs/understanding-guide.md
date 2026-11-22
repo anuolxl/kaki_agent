@@ -562,6 +562,17 @@ KAKI_UNDERSTANDING__AMBIGUITY__POLICY=model_decide kaki-agent -C /path/to/repo t
 
 在对话中先输入“只读介绍仓库和测试入口，不修改文件”；明确目标后输入“修复某文件中的具体问题，运行指定测试并review本轮diff”。等待授权时先检查路径/命令再选once或turn；不要把权限问题的回答当成新任务。停止按钮结束本轮，Ctrl+C退出进程；恢复会话用`--resume last`，不会重放未知副作用。相同项目不要同时运行两个修改任务，工作区lease会阻止并发。
 
+### 本机部署入口
+
+本机全局命令已指向固定源码目录 `/Users/bytedance/github/kaki_agent-v0.3`，版本0.3.0。原 `/Users/bytedance/github/kaki_agent` 保留未提交的文档改动；在旧工作区运行 `uv run` 会使用其旧源码，日常使用全局 `kaki-agent`。现有Right Code密钥与地址保留，新增配置为hybrid/hybrid、10秒、ask、task_scoped。App启动器版本读取Python包版本。
+
+```bash
+kaki-agent --version
+cd /Users/bytedance/github/kaki_agent-v0.3
+uv run python scripts/install_macos_app.py
+open "$HOME/Applications/Kaki.app"
+```
+
 ## 15.11 真实验收结果、界面与验证边界
 
 本期验收使用临时独立Git仓库和独立KAKI_HOME，不修改media_platform作为试验。现有Right Code主模型`openai/gpt-5.6-sol`和Playwright MCP均实际运行，不以mock结果冒充真实模型验证。
