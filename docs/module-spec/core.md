@@ -1,4 +1,4 @@
-# Kaki v0.2 核心契约
+# Kaki v0.3 核心契约
 
 此文档对应当前实现。桌面层契约见 [app.md](app.md)，当前操作指南见 [../app-guide.md](../app-guide.md)，原有内核详解见 [../kaki-agent-guide.md](../kaki-agent-guide.md)。运行语言 Python 3.12，每个 Git 工作区最多单活跃 Turn；边界检查不是 OS 沙箱。
 
@@ -23,7 +23,7 @@ Config 接受 camelCase/snake_case；优先级 CLI > 非空 KAKI_ 双下划线�
 | ContextPlan | include_message_ids/archive_refs/drop_message_ids/memory_sections=[]，working_state_injection/notes='' | Curator私有build或确定性策略构造；ID必须存在；不能拆工具组或丢保护组 |
 | AssembledContext | messages/budget/estimated_tokens必填，metadata={} | 最后预算门输出；metadata包含path/validation/included_ids/plan/skills/memory/archive来源 |
 
-新增字段需同步序列化、Store、Provider、窗口估算、UI、恢复与本表。SQLite schema=2：v1 自动迁移前通过 SQLite backup API 生成包含 WAL 的一致备份 `kaki.sqlite3.v1-<随机ID>.backup`（0600），再增加 sessions.archived 并提交版本2；拒绝更高版本，不静默重置。迁移后不要用旧版本进程写同一数据库。规范完整原文始终在messages表，窗口选择/摘要均为派生数据。
+新增字段需同步序列化、Store、Provider、窗口估算、UI、恢复与本表。SQLite schema=3：v1/v2 自动迁移前通过 SQLite backup API 生成包含 WAL 的一致备份 `kaki.sqlite3.v<原版本>-<随机ID>.backup`（0600），保留/补齐 sessions.archived，新增 decisions 并提交版本3；拒绝更高版本，不静默重置。升级前退出旧进程；回滚二进制必须同时恢复匹配的数据库备份，不能让旧进程写v3。规范完整原文始终在messages表，窗口选择/摘要和任务理解均为派生数据。
 
 ## 持久化表和事务边界
 
@@ -34,24 +34,25 @@ Store.run(operation,*args) 进入唯一ThreadPoolExecutor(1)持有的SQLite连�
 - messages(id,session_id,turn_id,seq UNIQUE per session,role,content,payload,created)：稳定递增ID、原始领域payload。
 - tool_runs(id,turn_id,tool_call_id,name,arguments,state,result_json,started,ended)：commit_model 同事务保存assistant原生项与全部planned；mark_running在执行前提交；commit_tool同事务保存结果与tool消息。已完成结果不会被未完成同批读操作覆盖。
 - events(seq,session_id,turn_id,type,payload,created)：事务内关键事实事件。
-- model_calls(id,turn_id,kind,model,status,usage,metadata,created,ended)：每次网络尝试，kind=main/curator/finalize。累计usage含所有已知调用，usage缺失计unknown_calls。
+- model_calls(id,turn_id,kind,model,status,usage,metadata,created,ended)：每次网络尝试，kind=main/curator/finalize/understanding。累计usage含所有已知调用，usage缺失计unknown_calls；会话恢复模型检查只使用main/finalize，understanding不得改变主会话模型约束。
 - context_state(session_id,manifest,working,plan,version)：可重建的窗口状态，更新递增版本。
 - archives(id,session_id,message_ids,artifact,summary,tags,created)：原文归档，artifact内path/sha256/size；引用限定会话，读取校验哈希。
 - memories(id,workspace_id,user_id,content,kind,state,version,source_ids,created,updated)：active/superseded/retracted，替代产生新版本并保留旧行。
 - snapshots(id,turn_id,phase,state,commit_id,metadata,created)：before/after，creating/ready/failed；失败不被描述为可恢复。
+- decisions(id,session_id,turn_id,kind,state,question,options,operation,response,created,ended)：用户交互事实。kind=clarification/approval/task，state=pending/answered/expired。options/operation/response为JSON。DecisionService构造q_，Store创建时把Turn设为waiting_user；有效回答同事务写response、恢复running；clarification另外追加真实user Message并返回message_id。取消/结束/恢复使pending过期，临时授权不从数据库恢复。
 
 ## 状态与恢复
 
-Turn活跃态queued/running/waiting_user；终态completed/interrupted/cancelled/failed不可二次覆盖。工具planned/running/succeeded/failed/cancelled/unknown。恢复持有workspace lease：planned→cancelled、running→unknown，补明确的失败/未知tool观测以关闭协议组；活跃Turn→interrupted/process_exit；运行中模型调用→interrupted。结果未知的副作用不自动重放。
+Turn活跃态queued/running/waiting_user；终态completed/interrupted/cancelled/failed不可二次覆盖。工具planned/running/succeeded/failed/denied/cancelled/unknown。denied只允许从planned提交，started=null、executed=false，仍补配对tool消息；拒绝不是执行失败或UNKNOWN。恢复持有workspace lease：planned→cancelled、running→unknown，补明确的失败/未知tool观测以关闭协议组；活跃Turn→interrupted/process_exit；运行中模型调用→interrupted。结果未知的副作用不自动重放。
 
 `Recovery.reconcile`给出最近中断任务、确定结果、未知参数、快照引用和草稿线索；只在用户新任务时注入，不自动继续旧命令。Session恢复要求主模型一致，避免跨模型重放opaque reasoning。
 
 ## 模块接口
 
 - Runtime.initialize(resume,connect_browser=True)/ensure_browser/submit(text,request_id)->Task/run(...)->TurnResult/answer(question_id,text)/cancel/close。负责租约、before/after和唯一终态发布；interactive标记控制快照策略。App 用 connect_browser=False 打开历史，首次发送才连接 MCP，普通 TUI 保持原行为。close 先标记 closed 再取消，不在进程退出时启动新的 after 快照，记录明确警告；普通停止本轮仍执行正常收尾。恢复机制仍处理强制退出留下的 UNKNOWN。
-- RightCodeProvider.complete(messages,tools,model,max_tokens,turn_id,kind,on_delta,tool_choice)->ModelResponse；close。delta仅展示，完整终事件后才允许工具执行。
+- RightCodeProvider.complete(messages,tools,model,max_tokens,turn_id,kind,on_delta,tool_choice,max_attempts=4)->ModelResponse；close。理解调用固定max_attempts=1，外层10秒deadline；主调用保留原有限重试。delta仅展示，完整终事件后才允许工具执行。
 - ContextEngine.assemble(session,history,user,tools,force,recovery)->AssembledContext；rebalance(session,window,tools)；after_turn。所有历史选择经闭包/预算门。
-- ToolRegistry.execute_many(calls,ctx,on_start,on_complete)->按输入序ToolResult；safe READ最多4，其他串行；每个完成即调用on_complete落库。Schema/路径/超时失败返回failed观测；Cancel向上传播。
+- ToolRegistry.prepare/execute/execute_many：先规范化参数、校验Schema/路径和能力、等待必要授权，再校验真实目标及写入前hash、捕获必要before快照、mark_running和实际I/O；safe READ预检串行、执行最多4并发，其他串行；每个完成立即落库。无权限服务默认拒绝。ToolResult新增executed=True、denied=False、decision_id=None；拒绝/预检失败改executed=false，只有实际进入工具实现才为true。测试证据还必须满足executed，不能由拒绝结果生成verification。
 - BrowserMcp.start/call/close：专用owner task持有stdio/ClientSession，队列串行，独立项目profile，文本/图片/结构化错误规范化。
 - Store.run：内部操作名按源码定义，不虚构RPC/网络服务。
 - Checkpoint.capture(turn,phase)/plan_restore(turn)/apply(plan,approved_paths)：只用独立git-dir；恢复前预览/批准，写时再校验blob内容和Git文件模式（普通/可执行/符号链接/目录）。RestorePlan.paths包含current_mode、expected_current_mode，避免覆盖仅权限变化或类型变化。
@@ -68,3 +69,17 @@ tiktoken o200k_base，加载失败用UTF8字节/3保守回退；估算包含完�
 自动化覆盖配置别名/优先级/密钥诊断、路径逃逸、执行租约、协议配对、崩溃UNKNOWN、幂等与终态、真实文件/Shell、取消恢复、ask_user、迭代上限、快慢路径/超时/无效plan/固定开销溢出、原文归档、活动Turn重平衡、本地Skill/中文召回、记忆版本、shadow Git原始字节/冲突/用户index不变、Responses SSE终事件与TUI流式归并。真实模型/TUI验收结果见技术手册，CI未执行时不声称CI通过。
 
 v0.2 另覆盖 v1→v2 备份迁移、会话归档/恢复/重命名、收尾阶段不提前报完成、等待用户作用域、关闭跳过新快照、HTTP/WS 鉴权、慢客户端 resync、真实子进程 SIGINT 130/单实例、PTY `/quit` 和 Ctrl+C 退出，以及 Node 状态决策测试。
+
+## v0.3 任务理解、权限与交互契约
+
+详见[任务理解模块契约](understanding.md)和[源码与操作指南](../understanding-guide.md)。新增UnderstandingService、PermissionService、DecisionService，复用同一个Runtime；TUI/App仅呈现不同。
+
+`Runtime._turn`在accept_turn后执行理解；默认有关键歧义才询问，最多两次预处理澄清，同一Turn，澄清不重置额外模型预算。`model_decide`把未解引用交主loop决定，但不放宽权限。无交互CLI需要人类输入时返回interrupted/clarification_required或approval_required，CLI退出2；不会创建无限等待Future。
+
+快照时机改为首次通过权限的workspace.write或test.execute之前；普通只读对话不建立before/after。测试可产生文件副作用，因此也捕获before。只有存在before才捕获after；关闭程序仍跳过新after。快照失败单独警告，不伪造可恢复性。
+
+权限默认task_scoped：明确的当前人类修改/测试任务可自动获得相应范围；只回答、禁止写入、排除路径及本地read_only配置优先。模型意图、改写、网页、Skill、旧记忆不授权。权限不明确时默认询问；授权once/turn仅当前工作区/会话/Turn，文件范围按目标规范路径，测试按cwd+argv，浏览器交互按完整操作指纹。硬拒绝凭据、Agent配置/指令/Skills控制文件、Git写操作、部署、管理员命令及浏览器任意JS/安装/上传。
+
+Shell以argv启动，不再使用bash -c；只支持源码列出的pwd/echo、只读Git和测试模板，其他命令/管道/替换/重定向拒绝。Git禁外部diff/textconv/pager，禁可选index更新，统一排除凭据和Agent配置路径。测试子进程使用当前用户权限，没有OS沙箱，不能保证其内部文件/网络隔离。
+
+新测试覆盖9种独立策略组合、单网络尝试、超时/取消、无效来源/约束丢失、原文与Turn保持、模型意图不授权、预检拒绝与配对、授权重试与作用域、等待中取消和并发文件变化、schema3备份迁移、TUI/App实际决策链。

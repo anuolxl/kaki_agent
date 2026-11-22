@@ -2,6 +2,8 @@
 
 Python 3.12 本地编码 Agent。默认打开简易桌面 App：工作区与会话侧栏、多轮对话、流式 Markdown、明确的运行/收尾/完成/停止/失败状态。通过 Right Code 的 OpenAI Responses 兼容接口调用模型；保留文件与 Shell 工具、Playwright MCP、本地 Skills、会话持久化、上下文规划/归档、项目记忆和独立 Git 快照。Textual TUI 仍可显式启动。
 
+v0.3 增加独立、可切换策略的意图识别与 Query 改写（默认 hybrid、共享最多一次额外模型尝试、10秒超时回退），以及两种界面共用的任务权限检查与澄清/授权交互。详细流程、源码、配置、验证和边界见 [任务理解与权限指南](docs/understanding-guide.md)及[模块契约](docs/module-spec/understanding.md)。升级前退出旧 App/TUI；数据库自动备份后迁移至 schema3。
+
 当前操作手册与截图：[docs/app-guide.md](docs/app-guide.md)。架构：[docs/architecture.md](docs/architecture.md)。数据与接口契约：[core.md](docs/module-spec/core.md)、[app.md](docs/module-spec/app.md)。[v0.1 内核详解](docs/kaki-agent-guide.md)保留历史源代码摘录。
 
 从源码学习：[SQLite、源码阅读顺序与一次请求全链路](docs/source-reading-guide.md)，分别按顺序讲TUI与App的启动、接单和结果交互，公共Runtime/模型/工具链只展开一次，附函数调用流程图。

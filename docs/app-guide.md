@@ -1,6 +1,8 @@
-# Kaki App v0.2：安装、会话与操作指南
+# Kaki App v0.3：安装、会话与操作指南
 
 Kaki 现在默认打开一个简易的本机 App。左侧选择工作区和会话，右侧对话；底部多行输入，顶部持续显示本轮状态。已有 Python Agent 内核与 Right Code 配置继续使用。当前不是完整 Codex App 的功能复刻，暂未提供代码差异编辑器和图形化文件恢复审批。
+
+v0.3 新增意图识别、Query改写与操作授权。当前机制、配置切换和逐步操作见[任务理解与权限指南](understanding-guide.md)。默认hybrid、额外模型尝试最多一次、10秒超时回退；有关键歧义默认询问，权限明确的任务不重复授权。
 
 学习 SQLite、源码阅读顺序和请求从启动到结束的详细过程，见 [源码阅读指南](source-reading-guide.md)。该指南第01节单独精读TUI，第02节单独精读App，第03节合并公共内核，第04节对照差异，第05节查询日志与验证。
 
@@ -17,7 +19,7 @@ uv run python scripts/install_macos_app.py
 open "$HOME/Applications/Kaki.app"
 ```
 
-`~/Applications/Kaki.app` 可以放到 Dock。它是当前 Python 安装的启动器，不能单独复制到其他机器使用；移动/删除 uv 工具环境后需重新安装。首次升级到 v0.2 前退出旧的 Kaki TUI，避免旧版本进程继续写迁移后的数据库。
+`~/Applications/Kaki.app` 可以放到 Dock。它是当前 Python 安装的启动器，不能单独复制到其他机器使用；移动/删除 uv 工具环境后需重新安装。升级到v0.3前退出所有旧App/TUI，避免旧版本进程写迁移后的数据库。
 
 从任意终端明确指定目标仓库：
 
@@ -110,7 +112,7 @@ git status --short
 kaki-agent -C /path/to/repo doctor
 ```
 
-Kaki 的边界检查不是操作系统沙箱，Shell 使用当前用户权限。快照只覆盖文件，不撤回浏览器/网络副作用；人工恢复预览保留在 TUI：
+Kaki 的边界检查不是操作系统沙箱。v0.3仅通过argv启动支持的只读Git/测试命令，拒绝任意Shell脚本、管道和重定向；获准的测试仍使用当前用户权限，可以产生文件/网络副作用。只读任务不建立工作区快照；首次获准写入或执行测试前才建立before。快照只覆盖文件，不撤回浏览器/网络副作用；人工恢复预览保留在 TUI：
 
 ```bash
 kaki-agent -C /path/to/repo tui
@@ -126,7 +128,7 @@ kaki-agent -C /path/to/repo tui
 - `~/.kaki/projects/<项目名>-<路径hash>/kaki.sqlite3`：完整会话、工具、Turn、记忆和窗口状态。
 - 同项目状态目录的 archives/artifacts/checkpoints/browser-profile：原文归档、大输出、独立 Git 快照、浏览器独立会话。
 
-第一次打开 v1 数据库先自动一致备份，再升级至 schema2，为 sessions 增加 archived 默认0；不会清空历史。不要删除数据库来解决认证失败，密钥与历史是不同状态。
+第一次打开v1/v2数据库先自动一致备份，再升级至schema3，保留会话/归档字段并新增decisions表。原始历史不清空；回滚旧程序必须使用匹配的备份，不能直接降级写v3。不要删除数据库来解决认证失败，密钥与历史是不同状态。
 
 ## 6. 常见问题与验证
 
