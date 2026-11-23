@@ -1,5 +1,7 @@
 # 15 任务理解、Query改写与执行权限（Kaki v0.3）
 
+延伸阅读：[第16章：Codex、Claude Code与Kaki的实现对比](intent-comparison.md)，说明主循环内理解与显式前处理的区别、搜索参数如何产生、各自的优势与证据边界。
+
 本章对应已实现的v0.3，不再是待实施方案。源码基线固定到[d5b8675](https://github.com/anuolxl/kaki_agent/tree/d5b8675b568209182f74da1f626060627fe6ac25)。uv测试runner的兼容修复对应[39e7acf](https://github.com/anuolxl/kaki_agent/tree/39e7acffe32d998b94a08fb147dac6df94b904c5)；其余节选仍使用上述固定基线。原有TUI/App入口与主loop继续复用，本轮在接单后增加任务理解，在执行工具前增加权限检查。当前没有操作系统级沙箱；获准的测试仍以当前用户权限运行。
 
 ## 15.01 从用户输入到结束，先按顺序建立全貌
