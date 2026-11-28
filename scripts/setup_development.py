@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 import time
@@ -16,6 +17,41 @@ import yaml
 
 def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def bundle_references(source, target):
+    """Make trusted local Markdown dependencies self-contained without adding extra Skills."""
+    mapping = {p.resolve(): target / p.relative_to(source) for p in source.rglob("*.md")}
+    queue = list(mapping)
+    total = 0
+    for original in queue:
+        if len(queue) > 100:
+            raise ValueError("Skill reference closure exceeds 100 Markdown files")
+        destination = mapping[original]
+        text = destination.read_text()
+
+        def replace(match):
+            nonlocal total
+            link, anchor = match.group(1), match.group(2) or ""
+            if "://" in link or not link.endswith(".md"):
+                return match.group(0)
+            dependency = (original.parent / link).resolve()
+            if not dependency.is_file() or not dependency.is_relative_to(source.parent):
+                return match.group(0)
+            if dependency not in mapping:
+                total += dependency.stat().st_size
+                if total > 8 * 1024 * 1024:
+                    raise ValueError("Skill reference closure exceeds 8 MiB")
+                name = dependency.relative_to(source.parent).as_posix().replace("/", "__")
+                mapped = target / "references" / "upstream" / name
+                mapped.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(dependency, mapped)
+                mapping[dependency] = mapped
+                queue.append(dependency)
+            relative = os.path.relpath(mapping[dependency], destination.parent)
+            return "](" + relative + anchor + ")"
+
+        destination.write_text(re.sub(r"\]\(([^)#]+)(#[^)]*)?\)", replace, text))
 
 
 def install(args):
@@ -97,6 +133,7 @@ profile 的参数是 JSON arguments 数组，禁止将整段 Shell 命令作为�
         (target / "SKILL.md").write_text(
             "---\n" + yaml.safe_dump(meta, allow_unicode=True, sort_keys=False) + "---\n" + adapter + body
         )
+        bundle_references(original, target)
         for p in target.rglob("*"):
             p.chmod(0o700 if p.is_dir() else 0o600)
         scripts = target / "scripts"
