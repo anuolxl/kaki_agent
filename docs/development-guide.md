@@ -60,3 +60,8 @@ fetch origin release/2026-11-30，再创建codex/rtc-minus999分支。
 ## 日志与源码阅读顺序
 
 `development.py`看类型化Git/命令/MR预检；`tools.py`看注册、延迟发现、执行前复核；`permissions.py`和`decisions.py`看实际人类授权；`context/knowledge.py`看Skill检索与依赖；`loop.py`看分支切换后刷新；`execution.py`看进程取消；`store.py`看unknown持久化。项目SQLite的tool_runs/decisions/events记录调用、授权与终态；MR回执在项目state/workflows/mr。完整字段见模块契约。
+
+
+## 长会话续跑
+
+旧版前3个用户组可能积累大量工具输出和Responses原生opaque reasoning，导致新任务组装超窗而在执行工具前失败。当前在预算压力下先分页旧工具正文，仍超限时将较早的完整assistant+tool-result exchange整体移出活动窗口并归档，保留初始用户约束和最新完整exchange。保留的原生项不改写，SQLite事实不删改；context plan的elided_tool_ids、paged_exchange_ids及archive_ref可审计选择。Curator正常、超时、无效均受同一预算门约束，不需要为续跑清空会话。

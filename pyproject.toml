@@ -1,6 +1,6 @@
 [project]
 name = "kaki-agent"
-version = "0.4.0"
+version = "0.4.1"
 description = "A local Python coding agent with durable sessions and bounded context"
 requires-python = ">=3.12,<3.13"
 license = "Apache-2.0"

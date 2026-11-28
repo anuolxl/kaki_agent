@@ -5,7 +5,7 @@ from conftest import ScriptedProvider
 
 from kaki.context import ContextEngine
 from kaki.context.curator import parse_plan
-from kaki.context.history import canonical, shrink_tool_text, structural_errors
+from kaki.context.history import canonical, page_tool_exchanges, shrink_tool_text, structural_errors
 from kaki.context.knowledge import Skills, rank
 from kaki.context.tokens import estimate
 from kaki.store import Store
@@ -27,6 +27,29 @@ def test_pair_closure_and_shrink_are_lossless_to_source():
     shrunk, changed = shrink_tool_text(history, 1)
     assert changed == 1 and shrunk[2].content != history[2].content
     assert history[2].content == "A" * 500
+
+
+def test_native_budget_paging_keeps_parallel_calls_with_their_reasoning():
+    history = [Message("user", "initial immutable constraint", id=1)]
+    for i in range(5):
+        native = [{"type": "reasoning", "id": f"r{i}", "encrypted_content": "opaque-" * 1000}]
+        calls = []
+        for suffix in ["a", "b"]:
+            calls.append({"id": f"{i}{suffix}", "name": "read", "arguments": {}})
+            native.append(
+                {"type": "function_call", "call_id": f"{i}{suffix}", "name": "read", "arguments": "{}"}
+            )
+        history.append(Message("assistant", id=2 + 3 * i, tool_calls=calls, native_items=native))
+        history.extend(
+            Message("tool", "observation", id=3 + 3 * i + j, tool_call_id=f"{i}{suffix}")
+            for j, suffix in enumerate(["a", "b"])
+        )
+    limit = estimate([history[0], *history[-3:]], []) + 20
+    selected, removed = page_tool_exchanges(history, [], limit)
+    assert selected == [history[0], *history[-3:]]
+    assert len(removed) == 12
+    assert not structural_errors(selected)
+    assert selected[1].native_items == history[-3].native_items
 
 
 @pytest.mark.asyncio
@@ -153,6 +176,86 @@ def test_invalid_plan_types():
         parse_plan({"include_message_ids": [True]})
     with pytest.raises(KakiError):
         parse_plan({"made_up": []})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("planner", ["valid", "invalid", "timeout"])
+async def test_resume_large_protected_tool_turn_pages_observations_without_losing_facts(
+    workspace, config, planner
+):
+    from kaki.types import ToolResult
+
+    config.agents.defaults.context_window_tokens = 8192
+    config.agents.defaults.max_tokens = 512
+    config.context.protect_first_n = 3
+    config.context.curator_timeout_seconds = 0.05
+    provider = ScriptedProvider(ModelResponse(text="not a plan"))
+    store = Store(workspace.state / "test.sqlite3", workspace.id)
+    await store.open()
+    try:
+        session = await store.run("new_session")
+        turn, original, _ = await store.run(
+            "accept_turn", session, "Only edit source.go; preserve the user's constraints"
+        )
+        for i in range(20):
+            _, runs = await store.run(
+                "commit_model",
+                session,
+                turn,
+                ModelResponse(
+                    tool_calls=[ToolCall(f"read-{i}", "read", {"path": "source.go"})],
+                    native_items=[
+                        {"type": "reasoning", "id": f"reason-{i}", "encrypted_content": "opaque-" * 2000},
+                        {
+                            "type": "function_call",
+                            "call_id": f"read-{i}",
+                            "name": "read",
+                            "arguments": '{"path":"source.go"}',
+                        },
+                    ],
+                ),
+            )
+            await store.run("mark_running", runs[0]["id"])
+            await store.run(
+                "commit_tool", session, turn, runs[0]["id"], ToolResult("large source evidence " * 400)
+            )
+        await store.run("finish_turn", TurnResult(turn, "interrupted", "budget reached", "iteration_limit"))
+        history = await store.run("messages", session)
+        if planner == "valid":
+            provider = ScriptedProvider(
+                ModelResponse(
+                    tool_calls=[
+                        ToolCall(
+                            "plan", "kaki_context_build", {"include_message_ids": [m.id for m in history]}
+                        )
+                    ]
+                )
+            )
+        elif planner == "timeout":
+            provider.block = asyncio.Event()
+        _, user, _ = await store.run(
+            "accept_turn", session, "Continue the same task without repeating completed work"
+        )
+        engine = ContextEngine(workspace, store, config, provider)
+        window = await engine.assemble(session, history, user, [], force=True)
+        assert window.estimated_tokens <= window.budget.input_limit
+        assert not structural_errors(window.messages)
+        assert any(m.id == original.id and m.content == original.content for m in window.messages)
+        assert window.metadata["paged_exchange_ids"]
+        assert [m for m in window.messages if m.role == "tool"][-1].content == [
+            m for m in history if m.role == "tool"
+        ][-1].content
+        payload, _ = await engine.archive.load(session, window.metadata["archive_ref"])
+        archived = {m["id"]: m["content"] for m in payload["messages"]}
+        for m in history:
+            if m.id in window.metadata["elided_tool_ids"] + window.metadata["paged_exchange_ids"]:
+                assert archived[m.id] == m.content
+        last_assistant = [m for m in window.messages if m.role == "assistant"][-1]
+        assert last_assistant.native_items == [m for m in history if m.role == "assistant"][-1].native_items
+        persisted = await store.run("messages", session)
+        assert [(m.id, m.content) for m in persisted[:-1]] == [(m.id, m.content) for m in history]
+    finally:
+        await store.close()
 
 
 @pytest.mark.asyncio
