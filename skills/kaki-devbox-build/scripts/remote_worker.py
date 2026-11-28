@@ -7,10 +7,12 @@ import json
 import os
 import pathlib
 import re
+import shlex
 import shutil
 import signal
 import subprocess
 import sys
+import tarfile
 import time
 
 REPOS = {"sdk": "byteview-mp-cpp-sdk", "media": "byteview-mp-media_platform"}
@@ -21,6 +23,9 @@ DEPENDENCIES = {
     "metrics_sdk": {"repo": "cpputil/metrics_sdk", "ref": "v1.3.13"},
     "program": {"repo": "cpputil/program", "ref": "1.0.0"},
     "consul": {"repo": "cpputil/consul", "ref": "1.0.0", "parent": "program"},
+    "monitoring": {"repo": "inf/monitoring-commons-cpp", "ref": "v1.0.30", "parent": "metrics_sdk"},
+    "env": {"repo": "cpputil/env", "ref": "master", "parent": "metrics_sdk"},
+    "sonic": {"repo": "middleware/sonic-cpp", "ref": "1.1.0", "bpt_parent": "cpp3rdlib/rapidjson"},
 }
 
 
@@ -46,6 +51,26 @@ def dependency_ref(repository, version):
         except RuntimeError:
             pass
     raise RuntimeError("fixed dependency branch/tag is missing")
+
+
+def bpt_declarations(root, require=False):
+    # BPT包安装后也可能继续引用Git源码；成功前核验实际父BUILD，不改包内容。
+    result = {}
+    manifest = root / "dependencies.json"
+    prepared = read_json(manifest) if manifest.is_file() else {}
+    for name, item in DEPENDENCIES.items():
+        if not item.get("bpt_parent"):
+            continue
+        path = root / item["bpt_parent"] / "BUILD"
+        if not path.is_file():
+            if require and name in prepared:
+                raise RuntimeError("BPT dependency declaration is not installed: " + name)
+            result[name] = {"path": str(path), "sha256": None}
+            continue
+        if item["repo"] + ":" + item["ref"] + "@" not in path.read_text():
+            raise RuntimeError("BPT parent BUILD no longer declares fixed dependency: " + name)
+        result[name] = {"path": str(path), "sha256": sha_file(path)}
+    return result
 
 
 def now():
@@ -189,6 +214,135 @@ def go_environment():
     raise RuntimeError("Go 1.23.x was not found; no global Go configuration was changed")
 
 
+def go_cache_info(request):
+    root = owned_root(request["task"])
+    return {
+        "media_commit": read_json(root / "source-media.json")["source_commit"],
+        "sdk_commit": read_json(root / "source-sdk.json")["source_commit"],
+    }
+
+
+def go_escape(value):
+    if not re.match(r"^[A-Za-z0-9_.+!~/-]+$", value) or ".." in value or value.startswith("/"):
+        raise ValueError("invalid module identifier")
+    return "".join("!" + char.lower() if char.isupper() else char for char in value)
+
+
+def go_cache_inventory(request):
+    owned_root(request["task"])
+    env, _ = go_environment()
+    cache = pathlib.Path(command(["go", "env", "GOMODCACHE"], env=env)) / "cache" / "download"
+    modules = request["modules"]
+    if len(modules) > 3000:
+        raise ValueError("too many modules")
+    missing = []
+    for item in modules:
+        directory = cache / go_escape(item["path"]) / "@v"
+        if any(
+            not (directory / (go_escape(item["version"]) + suffix)).is_file()
+            for suffix in [".mod", ".info", ".zip"]
+        ):
+            missing.append(item)
+    return {"missing": missing, "module_count": len(modules)}
+
+
+def go_cache_upload(request):
+    root = owned_root(request["task"])
+    if go_cache_info(request) != {key: request[key] for key in ["media_commit", "sdk_commit"]}:
+        raise RuntimeError("Go cache source commits differ")
+    if not re.match(r"^[0-9a-f]{64}$", request["bundle_sha256"]):
+        raise ValueError("invalid Go cache bundle hash")
+    directory = root / ".go-cache-transfers"
+    directory.mkdir(mode=0o700, exist_ok=True)
+    return {"path": str(directory / (request["bundle_sha256"] + ".tar"))}
+
+
+def complete_go_proxy_lists(directory, module_cache=None):
+    # go install还会用@v/list查询弃用信息；版本只来自已声明物料/匹配的已验证缓存。
+    if module_cache:
+        for mod in directory.rglob("*.mod"):
+            info = mod.with_suffix(".info")
+            cached = module_cache / mod.relative_to(directory).with_suffix(".info")
+            if not info.exists() and cached.is_file() and not cached.is_symlink():
+                value = read_json(cached)
+                if go_escape(value.get("Version", "")) == mod.stem:
+                    shutil.copy2(str(cached), str(info))
+    versions = {}
+    for info in directory.rglob("*.info"):
+        version = read_json(info).get("Version", "")
+        if not re.match(r"^v[0-9][A-Za-z0-9.+-]*$", version) or go_escape(version) != info.stem:
+            raise ValueError("invalid proxy version metadata")
+        versions.setdefault(info.parent, set()).add(version)
+    for parent, values in versions.items():
+        target = parent / "list"
+        if target.is_symlink():
+            raise RuntimeError("proxy version list cannot be a symlink")
+        target.write_text("\n".join(sorted(values)) + "\n")
+    return len(versions)
+
+
+def prepare_go_cache(request):
+    root = owned_root(request["task"])
+    archive = pathlib.Path(go_cache_upload(request)["path"])
+    if sha_file(archive) != request["bundle_sha256"]:
+        raise RuntimeError("Go module archive checksum mismatch")
+    destination = root / ".go-proxy" / request["bundle_sha256"]
+    if destination.is_symlink():
+        raise RuntimeError("Go proxy cannot be a symlink")
+    destination.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with tarfile.open(str(archive), "r") as tar:
+        members = tar.getmembers()
+        if len(members) > 20000 or sum(m.size for m in members) > 8 * 1024**3:
+            raise ValueError("Go module archive exceeds limits")
+        entry = tar.getmember(".kaki-go-cache-manifest.json")
+        if (
+            not entry.isfile()
+            or entry.size > 2 * 1024 * 1024
+            or len({m.name for m in members}) != len(members)
+        ):
+            raise ValueError("invalid module manifest/duplicate member")
+        manifest = json.loads(tar.extractfile(entry).read().decode())
+        if any(manifest[key] != request[key] for key in ["media_commit", "sdk_commit"]):
+            raise RuntimeError("Go module manifest commit mismatch")
+        for member in members:
+            name = member.name
+            if name == ".kaki-go-cache-manifest.json":
+                continue
+            if (
+                not member.isfile()
+                or name.startswith("/")
+                or ".." in pathlib.PurePosixPath(name).parts
+                or name not in manifest["files"]
+                or member.size != manifest["files"][name]
+                or not re.match(r"^[A-Za-z0-9_.+!~/-]+/@v/[A-Za-z0-9_.+!~-]+\.(mod|info|zip)$", name)
+            ):
+                raise ValueError("unsafe/unlisted module archive member")
+        for member in members:
+            if member.name == ".kaki-go-cache-manifest.json":
+                continue
+            target = destination / member.name
+            target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if target.is_symlink():
+                raise RuntimeError("module cache target is a symlink")
+            if not target.exists():
+                temporary = str(target) + ".part-" + str(os.getpid())
+                with tar.extractfile(member) as source, open(temporary, "wb") as output:
+                    shutil.copyfileobj(source, output)
+                os.chmod(temporary, 0o600)
+                os.replace(temporary, str(target))
+    complete_go_proxy_lists(destination)
+    result = {
+        "path": str(destination),
+        "bundle_sha256": request["bundle_sha256"],
+        "media_commit": request["media_commit"],
+        "sdk_commit": request["sdk_commit"],
+        "module_count": manifest["module_count"],
+        "file_count": manifest["file_count"],
+    }
+    write_json(root / "go-proxy.json", result)
+    return result
+
+
 def dependency_target(request):
     name = request["dependency"]
     if name not in DEPENDENCIES or not re.match(r"^[0-9a-f]{40}$", request["commit"]):
@@ -203,6 +357,7 @@ def prepare_dependency(request):
     # 仅导入SDK/固定父依赖已声明的Git源码；不把SSH凭据传给Devbox。
     root = owned_root(request["task"])
     expected = DEPENDENCIES[request["dependency"]]
+    bpt = bpt_declarations(root)
     source = pathlib.Path(dependency_target(request)["path"])
     if sha_file(source) != request["bundle_sha256"]:
         raise RuntimeError("dependency bundle checksum mismatch")
@@ -225,6 +380,8 @@ def prepare_dependency(request):
         "bundle_sha256": request["bundle_sha256"],
         "path": str(destination),
     }
+    if request["dependency"] in bpt:
+        record["declaration"] = bpt[request["dependency"]]
     manifest_path = root / "dependencies.json"
     manifest = read_json(manifest_path) if manifest_path.is_file() else {}
     manifest[request["dependency"]] = record
@@ -264,12 +421,117 @@ def dependency_environment(root, env):
     env["GIT_CONFIG_PARAMETERS"] = " ".join(parameters).strip()
 
 
+def extract_native_archive(archive, output):
+    # 运行库允许内部相对symlink，拒绝逃出私有目录的链接和设备文件。
+    with tarfile.open(str(archive), "r:gz") as tar:
+        for member in tar.getmembers():
+            if (
+                member.name.startswith("/")
+                or ".." in pathlib.PurePosixPath(member.name).parts
+                or member.islnk()
+            ):
+                raise ValueError("unsafe native archive member")
+            if member.issym() and (
+                member.linkname.startswith("/") or ".." in pathlib.PurePosixPath(member.linkname).parts
+            ):
+                raise ValueError("unsafe native archive symlink")
+            if not (member.isfile() or member.isdir() or member.issym()):
+                raise ValueError("unsupported native archive type")
+        tar.extractall(str(output))
+
+
+def prepare_native_dependencies(jobfile):
+    # 复用build.sh锁定的模块物料和下载器，只写本job目录，不运行全局安装步骤。
+    jobfile = pathlib.Path(jobfile)
+    spec = read_json(jobfile)
+    root = root_for(spec["task"])
+    record = read_json(root / "source-media.json")
+    checkout, _, env, _, linked = build_plan(spec, root, jobfile.parent)
+    output = jobfile.parent / "native-libs"
+    output.mkdir(mode=0o700, exist_ok=True)
+
+    def module_info(name):
+        value = json.loads(command(["go", "list", "-m", "-json", name], checkout, env=env))
+        if not value.get("Dir"):
+            value = json.loads(
+                command(["go", "mod", "download", "-json", name + "@" + value["Version"]], checkout, env=env)
+            )
+        return value
+
+    print("Preparing Media ONNX/whiteboard dependencies in the private job directory", flush=True)
+    silero = module_info("code.byted.org/larkvc/byteview-silero-vad")
+    archive = pathlib.Path(silero["Dir"]) / "onnxruntime" / "onnxruntime.tar.gz"
+    if os.uname().machine != "x86_64":
+        raise RuntimeError("this native validation runner currently supports x86_64 only")
+    extract_native_archive(archive, output)
+    wb = module_info("code.byted.org/larkvc/byteview-mp-wb")
+    script = pathlib.Path(wb["Dir"]) / "script" / "download_wb_sdk.sh"
+    env.pop("SCM_VERSION", None)
+    env.pop("SCM_REPO", None)
+    print(command(["bash", str(script), "x86_64", str(output)], checkout, timeout=300, env=env), flush=True)
+    libraries = [output / "libonnxruntime.so", output / "libwb.so"]
+    for library in libraries:
+        if not library.is_file():
+            raise RuntimeError("native dependency library missing: " + str(library))
+    manifest = {
+        "schema": 1,
+        "path": str(output),
+        "media_commit": record["source_commit"],
+        "sdk_commit": linked["source_commit"],
+        "created": now(),
+        "silero": {
+            "module": silero["Path"],
+            "version": silero["Version"],
+            "archive_sha256": sha_file(archive),
+        },
+        "whiteboard": {"module": wb["Path"], "version": wb["Version"], "script_sha256": sha_file(script)},
+        "libraries": [{"path": str(p), "sha256": sha_file(p), "size": p.stat().st_size} for p in libraries],
+    }
+    write_json(root / "native-dependencies.json", manifest)
+    print(json.dumps(manifest))
+
+
+def sdk_runtime_runner(jobdir, artifact_root, libdirs):
+    # 新SDK含glibc；仅验证二进制用配套loader，不能污染Go/Git/编译器进程。
+    loader = artifact_root / "ld-linux-x86-64.so.2"
+    if not loader.is_file():
+        raise RuntimeError("SDK runtime loader is missing")
+    runner = jobdir / "kaki-sdk-runtime"
+    runner.write_text(
+        "#!/bin/sh\nexec "
+        + shlex.quote(str(loader))
+        + " --library-path "
+        + shlex.quote(os.pathsep.join(libdirs))
+        + ' "$@"\n'
+    )
+    runner.chmod(0o700)
+    return runner
+
+
+def media_cgo_toolchain(env, directory=None):
+    # 与已构建SDK使用相同的Clang16/GCC13/Bullseye sysroot，不能混用宿主旧GCC ABI。
+    directory = directory or pathlib.Path("/opt/tiger/cpp_tools/x86_64_x86_64_clang_1606")
+    cc, cxx, config = directory / "bin" / "clang", directory / "bin" / "clang++", directory / "env.sh"
+    if not cc.is_file() or not cxx.is_file() or not config.is_file():
+        raise RuntimeError("SDK-compatible Clang16 toolchain is unavailable")
+    env["CC"], env["CXX"] = str(cc), str(cxx)
+    # 厂商clang包装器已经指定匹配的gcc-toolchain/sysroot；LLD和C++运行库仅用于链接。
+    env["CGO_LDFLAGS"] = env.get("CGO_LDFLAGS", "") + " -fuse-ld=lld -lstdc++ -lm"
+    return {
+        "root": str(directory),
+        "cc": str(cc),
+        "cxx": str(cxx),
+        "env_sha256": sha_file(config),
+        "version": command([str(cc), "--version"], timeout=15),
+    }
+
+
 def build_plan(spec, root, jobdir):
     # 固定repo/mode映射到真实命令；Media用临时modfile链接本次SDK，正式依赖保持。
     repo, mode = spec["repo"], spec["mode"]
     if (
         repo not in REPOS
-        or mode not in {"sdk-build", "sdk-test", "media-build", "media-test"}
+        or mode not in {"sdk-build", "sdk-test", "media-deps", "media-build", "media-test"}
         or not mode.startswith(repo + "-")
     ):
         raise ValueError("repo/mode mismatch")
@@ -285,6 +547,7 @@ def build_plan(spec, root, jobdir):
         raise RuntimeError("source tracked files changed before build; not discarded")
     env, version, linked = os.environ.copy(), None, None
     if repo == "sdk":
+        bpt_declarations(root)
         dependency_environment(root, env)
         official_blade = pathlib.Path("/opt/tiger/typhoon-blade/blade")
         if official_blade.is_file():
@@ -298,6 +561,25 @@ def build_plan(spec, root, jobdir):
         sdk = pathlib.Path(sdk_record["path"])
         if sdk_record["source_commit"] != spec.get("sdk_commit"):
             raise RuntimeError("linked SDK commit mismatch")
+        proxy_record = root / "go-proxy.json"
+        if proxy_record.is_file():
+            proxy = read_json(proxy_record)
+            if (
+                proxy["media_commit"] != record["source_commit"]
+                or proxy["sdk_commit"] != sdk_record["source_commit"]
+            ):
+                raise RuntimeError("Go module cache source commits differ; prepare the matching cache")
+            proxy_path = pathlib.Path(proxy["path"])
+            if str(proxy_path.parent) != str(root / ".go-proxy") or proxy_path.is_symlink():
+                raise RuntimeError("Go module proxy path changed")
+            env["GOPROXY"] = proxy_path.as_uri()
+            env["GONOPROXY"] = "none"
+            cache = pathlib.Path(command(["go", "env", "GOMODCACHE"], env=env)) / "cache" / "download"
+            complete_go_proxy_lists(proxy_path, cache)
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        env["GIT_SSH_COMMAND"] = (
+            "ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=2"
+        )
         sdk_build = read_json(root / "sdk-build-artifacts.json")
         if sdk_build["source_commit"] != sdk_record["source_commit"]:
             raise RuntimeError("SDK artifact provenance differs from the linked source")
@@ -326,24 +608,61 @@ def build_plan(spec, root, jobdir):
         )
         env["GOFLAGS"] = "-mod=mod -modfile=" + str(modfile)
         env["GOWORK"] = "off"
-        env["CGO_ENABLED"] = "1"
+        # Makefile/CI规定Go单测使用Stub，SDK原生回调由其测试单独验证。
+        env["CGO_ENABLED"] = "0" if mode == "media-test" else "1"
         libdirs = [str(library.parent), "/opt/tiger/byteview/rtc/worker/lib"]
-        env["LD_LIBRARY_PATH"] = os.pathsep.join(libdirs + [env.get("LD_LIBRARY_PATH", "")])
-        env["CGO_LDFLAGS"] = "-L" + str(library.parent) + " " + env.get("CGO_LDFLAGS", "")
+        native = None
+        native_record = root / "native-dependencies.json"
+        if native_record.is_file():
+            native = read_json(native_record)
+            if (
+                native["media_commit"] != record["source_commit"]
+                or native["sdk_commit"] != sdk_record["source_commit"]
+            ):
+                raise RuntimeError("native dependency source commits differ")
+            if any(sha_file(pathlib.Path(p["path"])) != p["sha256"] for p in native["libraries"]):
+                raise RuntimeError("native dependency library checksum changed")
+            libdirs.insert(1, native["path"])
+        if mode == "media-build" and native is None:
+            raise RuntimeError("native Media prerequisites missing: run media-deps before media-build")
+        # 运行库路径只交给运行器；SDK的libc进入LD_LIBRARY_PATH会让宿主Git崩溃。
+        env["CGO_LDFLAGS"] = (
+            "-L"
+            + str(library.parent)
+            + " -Wl,-rpath-link,"
+            + str(library.parent)
+            + " "
+            + env.get("CGO_LDFLAGS", "")
+        )
+        if native:
+            env["CGO_LDFLAGS"] += (
+                " -L" + native["path"] + " -Wl,-rpath-link," + native["path"] + " -ljemalloc"
+            )
         includes = [artifact_root / "include", pathlib.Path("/opt/tiger/byteview/rtc/worker/lib/include")]
+        if native:
+            includes.extend(
+                [
+                    pathlib.Path(native["path"]) / "include",
+                    pathlib.Path(native["path"]) / "include" / "onnxruntime",
+                ]
+            )
         env["CGO_CFLAGS"] = " ".join("-I" + str(p) for p in includes) + " " + env.get("CGO_CFLAGS", "")
         env["CGO_CXXFLAGS"] = env["CGO_CFLAGS"] + " " + env.get("CGO_CXXFLAGS", "")
-        argv = (
-            ["make", "test", "ARGS=./business_module/... -count=1"]
-            if mode == "media-test"
-            else ["go", "build", "-o", str(jobdir / "byteview_mp_media_platform"), "."]
-        )
+        if mode == "media-test":
+            argv = ["make", "test", "ARGS=./business_module/... -count=1"]
+        elif mode == "media-deps":
+            argv = [sys.executable, str(pathlib.Path(__file__)), "--native-deps", str(jobdir / "status.json")]
+        else:
+            argv = ["go", "build", "-o", str(jobdir / "byteview_mp_media_platform"), "."]
         linked = {
             "source_commit": sdk_record["source_commit"],
             "library": str(library),
             "sha256": sha_file(library),
             "modfile": str(modfile),
+            "runtime_libraries": libdirs,
         }
+        if mode == "media-build":
+            linked["cgo_toolchain"] = media_cgo_toolchain(env)
     return checkout, argv, env, version, linked
 
 
@@ -355,6 +674,9 @@ def worker(jobfile):
     lock = open(str(root / ".build.lock"), "a+")
     try:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        if (jobfile.parent / "cancel.request.json").exists():
+            data.update(status="cancelled", ended=now())
+            return
         data.update(status="running", pid=os.getpid(), started=now())
         write_json(jobfile, data)
         checkout, argv, env, version, linked = build_plan(data, root, jobfile.parent)
@@ -384,6 +706,35 @@ def worker(jobfile):
                 )
                 if setup.returncode:
                     raise RuntimeError("blade init failed: " + str(setup.returncode))
+            if (jobfile.parent / "cancel.request.json").exists():
+                data.update(status="cancelled", ended=now())
+                return
+            if data["mode"] == "media-test":
+                tools = root / ".tools" / "bin"
+                tools.mkdir(mode=0o700, parents=True, exist_ok=True)
+                env["GOBIN"] = str(tools)
+                env["PATH"] = str(tools) + os.pathsep + env.get("PATH", "")
+                if not (tools / "init-patcher").is_file():
+                    data["phase"] = "prepare-test-tool"
+                    write_json(jobfile, data)
+                    tool_env = env.copy()
+                    tool_env["GOFLAGS"] = ""
+                    tool_env["CGO_ENABLED"] = "0"
+                    setup = subprocess.run(
+                        [
+                            "go",
+                            "install",
+                            "code.byted.org/tikcast/wallet_scripts/init-patcher/cmd/init-patcher@v0.0.5",
+                        ],
+                        cwd=str(jobfile.parent),
+                        env=tool_env,
+                        stdout=log,
+                        stderr=subprocess.STDOUT,
+                        timeout=300,
+                    )
+                    if setup.returncode:
+                        raise RuntimeError("init-patcher installation failed: " + str(setup.returncode))
+            data["go_proxy"] = env.get("GOPROXY") if data["repo"] == "media" else None
             data["phase"] = "compile-or-test"
             process = subprocess.Popen(
                 argv, cwd=str(checkout), env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True
@@ -401,6 +752,10 @@ def worker(jobfile):
                     process.wait()
                 raise RuntimeError("remote build timeout; process group terminated")
         data.update(status="succeeded" if code == 0 else "failed", exit_code=code, ended=now())
+        if (jobfile.parent / "cancel.request.json").exists():
+            data.update(status="cancelled")
+        if code == 0 and data["repo"] == "sdk":
+            data["dependency_declarations"] = bpt_declarations(root, require=True)
         if code == 0 and data["mode"] == "sdk-build":
             # SDK test clears checkout/output. Keep build artifacts with this job
             # so later tests cannot remove the libraries used by linked Media.
@@ -428,6 +783,33 @@ def worker(jobfile):
                 )
         if code == 0 and data["mode"] == "media-build":
             binary = jobfile.parent / "byteview_mp_media_platform"
+            patcher = root / ".blade_tools" / "tools" / "patchelf"
+            library_root = pathlib.Path(linked["library"]).parent
+            command(
+                [str(patcher), "--set-interpreter", str(library_root / "ld-linux-x86-64.so.2"), str(binary)]
+            )
+            command(
+                [
+                    str(patcher),
+                    "--force-rpath",
+                    "--set-rpath",
+                    os.pathsep.join(linked["runtime_libraries"]),
+                    str(binary),
+                ]
+            )
+            runner = sdk_runtime_runner(jobfile.parent, library_root, linked["runtime_libraries"])
+            data["runtime_dependencies"] = command([str(runner), "--list", str(binary)])
+            sdk_line = next(
+                (line for line in data["runtime_dependencies"].splitlines() if "libcpp_sdk.so =>" in line), ""
+            )
+            actual_sdk = pathlib.Path(sdk_line.split("=>", 1)[1].strip().split()[0]) if sdk_line else None
+            if (
+                actual_sdk is None
+                or actual_sdk.resolve() != pathlib.Path(linked["library"]).resolve()
+                or sha_file(actual_sdk) != linked["sha256"]
+            ):
+                raise RuntimeError("native binary did not resolve the verified SDK artifact")
+            data["runtime_sdk"] = {"path": str(actual_sdk), "sha256": sha_file(actual_sdk)}
             data["artifacts"] = [
                 {"path": str(binary), "sha256": sha_file(binary), "size": binary.stat().st_size}
             ]
@@ -488,6 +870,34 @@ def start(request, runner):
     return data
 
 
+def cancel(request):
+    # 只取消该owner任务的真实构建进程组，PID复用或父子关系不符时拒绝信号。
+    root = owned_root(request["task"])
+    directory = root / ".kaki-jobs" / slug(request["job"])
+    data = read_json(directory / "status.json")
+    if data["status"] not in {"queued", "running"}:
+        return status(request)
+    child, parent = data.get("child_pid"), data.get("pid")
+    if child:
+        worker_cmd = pathlib.Path("/proc") / str(parent) / "cmdline"
+        child_stat = pathlib.Path("/proc") / str(child) / "stat"
+        if (
+            not worker_cmd.is_file()
+            or str(directory / "status.json").encode() not in worker_cmd.read_bytes()
+            or not child_stat.is_file()
+            or int(child_stat.read_text().split()[3]) != parent
+            or os.getpgid(child) != child
+        ):
+            raise RuntimeError("build process ownership changed; cancellation refused")
+    write_json(directory / "cancel.request.json", {"requested": now()})
+    if child:
+        try:
+            os.killpg(child, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    return {"cancel_requested": True, "job": request["job"], "previous_status": data["status"]}
+
+
 def status(request):
     # 读取同一job的终态和有界日志；PID消失只标未知，不当成功，也不重新编译。
     directory = root_for(request["task"]) / ".kaki-jobs" / slug(request["job"])
@@ -535,6 +945,16 @@ def dispatch(request, runner):
         return prepare_dependency(request)
     if action == "start":
         return start(request, runner)
+    if action == "cancel":
+        return cancel(request)
+    if action == "go-cache-info":
+        return go_cache_info(request)
+    if action == "go-cache-inventory":
+        return go_cache_inventory(request)
+    if action == "go-cache-upload":
+        return go_cache_upload(request)
+    if action == "go-cache-prepare":
+        return prepare_go_cache(request)
     if action == "status":
         return status(request)
     raise ValueError("unknown remote action")
@@ -542,3 +962,6 @@ def dispatch(request, runner):
 
 if __name__ == "__main__" and sys.argv[1:2] == ["--worker"]:
     worker(sys.argv[2])
+
+elif __name__ == "__main__" and sys.argv[1:2] == ["--native-deps"]:
+    prepare_native_dependencies(sys.argv[2])

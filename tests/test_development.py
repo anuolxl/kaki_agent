@@ -365,5 +365,14 @@ async def test_fetch_real_remote_branch_and_no_duplicate_mr_on_uncertain_result(
         assert first.uncertain and second.uncertain and len(calls) == 1
         receipt = next((workspace.state / "workflows/mr").glob("*.json"))
         assert json.loads(receipt.read_text())["state"] == "pending"
+
+        async def existing(*args):
+            return {"number": 42, "title": "original", "description": "original body"}
+
+        monkeypatch.setattr(dev, "_find_mr", existing)
+        reused = json.loads((await dev.mr(args, {})).text)
+        assert reused["existing_mr"]["description"] == "original body"
+        assert reused["created_remotely"] is False and reused["updated_remotely"] is False
+        assert len(calls) == 1  # Reuse must not issue a title/body write.
     finally:
         await rt.close()

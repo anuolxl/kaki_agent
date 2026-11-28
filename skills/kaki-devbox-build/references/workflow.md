@@ -14,7 +14,7 @@
 
 3. 启动后台任务：`devbox-build`。
 
-若Devbox对cpputil/log@1.0.0-streamlog、cpputil/metrics_sdk@v1.3.13、cpputil/program@1.0.0以及传递依赖cpputil/metrics2@dev、log_market/CppLogSDK@master、cpputil/consul@1.0.0拉取报publickey认证失败，在本机SDK项目调用`devbox-dependencies`，arguments=`["--task","<task>"]`。适配器先按父依赖顺序核对本机SDK与固定log/program依赖的BUILD声明，再用本机现有Git读取权限制作指定版本bundle并逐项验SHA，导入task下的`.git-dependencies`。worker仅在构建子进程中设置Git URL重写，兼容Git2.29，不传凭据、不改全局Git配置。依赖回执记录repo/ref/qualified_ref/commit/bundle_sha256/path；同名分支/tag优先分支，按git clone -b语义选择并记完整refs路径；本机也无读取权限时明确失败，不绕过ACL。然后使用新job ID重试构建，保留旧失败记录。
+若Devbox对cpputil/log@1.0.0-streamlog、cpputil/metrics_sdk@v1.3.13、cpputil/program@1.0.0以及传递依赖cpputil/metrics2@dev、log_market/CppLogSDK@master、cpputil/consul@1.0.0、inf/monitoring-commons-cpp@v1.0.30、cpputil/env@master拉取报publickey认证失败，在本机SDK项目调用`devbox-dependencies`，arguments=`["--task","<task>"]`。适配器先按父依赖顺序核对本机SDK与固定log/program/metrics_sdk依赖的BUILD声明，再用本机现有Git读取权限制作指定版本bundle并逐项验SHA，导入task下的`.git-dependencies`。worker仅在构建子进程中设置Git URL重写，兼容Git2.29，不传凭据、不改全局Git配置。依赖回执记录repo/ref/qualified_ref/commit/bundle_sha256/path；同名分支/tag优先分支，按git clone -b语义选择并记完整refs路径；本机也无读取权限时明确失败，不绕过ACL。然后使用新job ID重试构建，保留旧失败记录。
 
 ```text
 --repo sdk --task <task> --mode sdk-build --job sdk-build-<sha8> --timeout 1800
@@ -43,3 +43,13 @@ SDK构建输出另存该job的sdk-output目录并记录库SHA，避免随后buil
 worker与日志位于`<task>/.kaki-jobs/<job>/`；本机回执在当前项目state/workflows/devbox。Agent退出或SSH断开不取消后台构建，恢复后查询同一job；超时由worker终止自己的构建进程组。完成报告保留主机、源码SHA、新分支、实际argv、日志路径、退出码、SDK库SHA及联动modfile信息。SDK发布、服务部署与MR合并不是本Skill动作。
 
 脚本按包内容hash安装到本机skill-runtimes，远端worker也按hash保留；开发源文件更新不改正在使用的执行副本。升级时在空闲轮切换profiles并重启加载，不禁用校验，也不删除旧job或日志。远端脚本仅用Python3.5标准库；本机适配器使用Kaki的Python3.12环境。
+
+BPT安装后的rapidjson:1.1.0还声明middleware/sonic-cpp@1.1.0。固定镜像清单包含这第九项：prepare时读取已有远端父BUILD，首次尚未安装允许等待构建下载，SDK成功前必须核验该声明及SHA；不改BPT包。
+
+Media私有Go模块下载停滞时，devbox-go-cache --task <task>仅在Mac下载/读取go.mod/go.sum和replace声明的模块物料，含CI指定init-patcher@v0.0.5；比较远端缓存缺项后传mod/info/zip归档，校验SHA和路径并准备专属file GOPROXY。不会在Mac编译业务，不传凭据，不改全局Go配置。build只覆盖本次环境GONOPROXY=none，Go原有go.sum校验保留。缺失模块版本明确报错，不任意扩大目录或修改正式依赖。
+
+devbox-cancel --task <task> --job <job>仅对经PID/父子关系/进程组核验的本任务发取消信号，未知或复用PID拒绝；新worker终态为cancelled，旧worker可能记录failed/-15。取消后查原job直到终态，再使用新的job ID，源码和产物保留。
+
+Media native构建还需要build.sh声明的ONNX与白板SDK。用devbox-build --repo media --mode media-deps --task <task> --job media-deps-<sha8> --sdk-commit <SDK完整SHA>先准备：仅从go.mod锁定的byteview-silero-vad提取其onnxruntime.tar.gz、执行锁定白板模块自带下载器，输出到本job私有目录并记录SHA；不运行会改netrc/共享库的整个build.sh。media-build必须核对NativeDependencyManifest，使用对应头文件/库；构建后通过配套loader --list验证实际解析到同一SDK库SHA。
+
+分层验证：media-build为CGO=1的Linux原生编译及ELF依赖解析；media-test遵循README/Makefile/CI的CGO=0 Stub单元测试，不混称原生Go测试。C++ SDK自身的68项callback/EventBus原生测试另外执行。此流程不启动服务或模拟真实RTC会议。

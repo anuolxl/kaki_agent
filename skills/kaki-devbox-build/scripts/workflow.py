@@ -31,14 +31,18 @@ except Exception as e:print('KAKI_DEVBOX_JSON:'+json.dumps({'ok':False,'error':s
 def parser():
     # 模型只能选择固定动作、仓库、提交和job；没有自由主机、Shell命令或口令参数。
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--action", choices=["prepare", "dependencies", "start", "status"], required=True)
+    p.add_argument(
+        "--action",
+        choices=["prepare", "dependencies", "go-cache", "start", "status", "cancel"],
+        required=True,
+    )
     p.add_argument("--state", type=Path, required=True)
     p.add_argument("--target", help="trusted profile prefix; must match KAKI_DEVBOX_TARGET")
     p.add_argument("--repo", choices=["sdk", "media"])
     p.add_argument("--branch")
     p.add_argument("--commit")
     p.add_argument("--task", required=True)
-    p.add_argument("--mode", choices=["sdk-build", "sdk-test", "media-build", "media-test"])
+    p.add_argument("--mode", choices=["sdk-build", "sdk-test", "media-deps", "media-build", "media-test"])
     p.add_argument("--job")
     p.add_argument("--sdk-commit")
     p.add_argument("--wait", type=int, default=0)
@@ -58,7 +62,7 @@ async def main(args):
         raise ValueError("target differs from trusted profile configuration")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,79}", args.task):
         raise ValueError("invalid task identifier")
-    if args.action in {"start", "status"} and not re.fullmatch(
+    if args.action in {"start", "status", "cancel"} and not re.fullmatch(
         r"[A-Za-z0-9][A-Za-z0-9_-]{0,79}", args.job or ""
     ):
         raise ValueError("start/status require a valid job ID")
@@ -99,7 +103,11 @@ async def main(args):
         if key not in {"state", "target"} and value is not None
     }
     args.state.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if args.action == "dependencies":
+    if args.action == "go-cache":
+        from go_cache import prepare
+
+        result = await prepare(args, remote, target, options, env)
+    elif args.action == "dependencies":
         origin = await run_process(["git", "remote", "get-url", "origin"], Path.cwd(), 15)
         if not re.search(r"[:/]larkvc/byteview-mp-cpp-sdk(?:\.git)?$", origin["stdout"].strip()):
             raise ValueError("prepare SDK dependencies from the matching SDK workspace")
@@ -112,7 +120,8 @@ async def main(args):
         }
         for name in dependency_order():
             dependency = DEPENDENCIES[name]
-            declaration = build
+            # BPT父包在远端安装；由worker在存在时检查并在构建成功前强制复核。
+            declaration = None if dependency.get("bpt_parent") else build
             if dependency.get("parent"):
                 parent = dependency["parent"]
                 parent_cache = args.state / ("dependency-" + parent + ".git")
@@ -125,7 +134,7 @@ async def main(args):
                 if viewed["exit_code"]:
                     raise ValueError("fixed parent dependency BUILD is unavailable")
                 declaration = viewed["stdout"]
-            if not re.search(
+            if declaration is not None and not re.search(
                 re.escape(dependency["repo"] + ":" + dependency["ref"]) + r"(?=@|[\"'])", declaration
             ):
                 raise ValueError("SDK BUILD dependency differs from the fixed workflow: " + name)
@@ -220,7 +229,10 @@ async def main(args):
         request["bundle_sha256"] = digest
     if result is None:
         result = await remote(request)
-    receipt = args.state / (args.task + "-" + (args.job or args.repo or "status") + ".json")
+    receipt_kind = (
+        ("cancel-" + args.job) if args.action == "cancel" else (args.job or args.repo or args.action)
+    )
+    receipt = args.state / (args.task + "-" + receipt_kind + ".json")
     receipt.write_text(
         json.dumps({"target": target, "request": request, "result": result}, ensure_ascii=False, indent=2)
     )

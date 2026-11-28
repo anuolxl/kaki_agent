@@ -168,6 +168,144 @@ def test_remote_worker_keeps_python35_syntax_and_no_local_stdlib_shadow():
     ast.parse(probe.REMOTE, feature_version=(3, 5))
 
 
+def test_go_cache_module_selection_and_replacement_are_declared_only():
+    cache = load("go_cache")
+    required = cache.declared_modules("require (\n example.com/Old v1.0.0\n)\n")
+    selected = cache.apply_replacements(required, "replace example.com/Old => example.com/new v1.2.0")
+    assert selected == {("example.com/new", "v1.2.0")}
+    assert cache.escape_module("example.com/SDK") == "example.com/!s!d!k"
+    assert cache.escape_module("git.sr.ht/~sbinet/gg") == "git.sr.ht/~sbinet/gg"
+    with pytest.raises(ValueError):
+        cache.escape_module("../credentials")
+
+
+@pytest.mark.parametrize("unsafe", [False, True])
+def test_go_cache_transfer_checks_commit_and_rejects_archive_escape(prepared, unsafe):
+    import io
+    import json
+    import tarfile
+
+    remote, _, request = prepared
+    remote.prepare(request)
+    root = remote.root_for(request["task"])
+    remote.write_json(root / "source-media.json", {"source_commit": request["commit"]})
+    payload = {"task": request["task"], "media_commit": request["commit"], "sdk_commit": request["commit"]}
+    archive = root / "cache.tar"
+    name = "../foreign.mod" if unsafe else "example.com/pkg/@v/v1.2.3.mod"
+    content = b"module example.com/pkg\n"
+    manifest = {**payload, "file_count": 1, "module_count": 1, "files": {name: len(content)}}
+    with tarfile.open(archive, "w") as tar:
+        for entry_name, value in [
+            (".kaki-go-cache-manifest.json", json.dumps(manifest).encode()),
+            (name, content),
+        ]:
+            entry = tarfile.TarInfo(entry_name)
+            entry.size = len(value)
+            tar.addfile(entry, io.BytesIO(value))
+    payload["bundle_sha256"] = remote.sha_file(archive)
+    shutil.copy2(archive, remote.go_cache_upload(payload)["path"])
+    if unsafe:
+        with pytest.raises(ValueError, match="unsafe"):
+            remote.prepare_go_cache(payload)
+        assert not (root / ".go-proxy/foreign.mod").exists()
+    else:
+        result = remote.prepare_go_cache(payload)
+        assert Path(result["path"], name).read_bytes() == content
+        assert remote.read_json(root / "go-proxy.json")["media_commit"] == request["commit"]
+
+
+def test_cancel_refuses_a_process_without_job_ownership(prepared):
+    import os
+
+    remote, _, request = prepared
+    root = remote.owned_root(request["task"])
+    directory = root / ".kaki-jobs/foreign-process"
+    remote.write_json(
+        directory / "status.json", {"status": "running", "pid": os.getpid(), "child_pid": os.getpid()}
+    )
+    with pytest.raises(RuntimeError, match="ownership changed"):
+        remote.cancel({"task": request["task"], "job": "foreign-process"})
+    assert not (directory / "cancel.request.json").exists()
+
+
+def test_sdk_runtime_runner_preserves_arguments_without_polluting_host_tools(tmp_path):
+    remote = load("remote_worker")
+    sdk = tmp_path / "sdk libs"
+    sdk.mkdir()
+    loader = sdk / "ld-linux-x86-64.so.2"
+    loader.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+    loader.chmod(0o700)
+    job = tmp_path / "job"
+    job.mkdir()
+    runner = remote.sdk_runtime_runner(job, sdk, [str(sdk), "/opt/known libs"])
+    result = subprocess.check_output([str(runner), "/tmp/test binary", "-test.run=RTC test"], text=True)
+    assert result.splitlines() == [
+        "--library-path",
+        str(sdk) + ":/opt/known libs",
+        "/tmp/test binary",
+        "-test.run=RTC test",
+    ]
+
+
+def test_native_archive_keeps_relative_library_link_and_rejects_escape(tmp_path):
+    import io
+    import tarfile
+
+    remote = load("remote_worker")
+    archive = tmp_path / "native.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        file = tarfile.TarInfo("libnative.so.1")
+        file.size = 3
+        tar.addfile(file, io.BytesIO(b"lib"))
+        link = tarfile.TarInfo("libnative.so")
+        link.type, link.linkname = tarfile.SYMTYPE, "libnative.so.1"
+        tar.addfile(link)
+    output = tmp_path / "runtime"
+    output.mkdir()
+    remote.extract_native_archive(archive, output)
+    assert (output / "libnative.so").read_bytes() == b"lib"
+    bad = tmp_path / "bad.tar.gz"
+    with tarfile.open(bad, "w:gz") as tar:
+        link = tarfile.TarInfo("include")
+        link.type, link.linkname = tarfile.SYMTYPE, "../../user-directory"
+        tar.addfile(link)
+    with pytest.raises(ValueError, match="unsafe"):
+        remote.extract_native_archive(bad, output)
+
+
+def test_media_uses_sdk_toolchain_without_global_runtime_environment(tmp_path):
+    remote = load("remote_worker")
+    directory = tmp_path / "toolchain"
+    (directory / "bin").mkdir(parents=True)
+    for name in ["clang", "clang++"]:
+        executable = directory / "bin" / name
+        executable.write_text('#!/bin/sh\necho "clang version 16.0.6"\n')
+        executable.chmod(0o700)
+    (directory / "env.sh").write_text("# matching sysroot contract")
+    env = {"CGO_LDFLAGS": "-Lverified-sdk", "LD_LIBRARY_PATH": "/host-libraries"}
+    result = remote.media_cgo_toolchain(env, directory)
+    assert env["CC"] == str(directory / "bin/clang")
+    assert env["CXX"] == str(directory / "bin/clang++")
+    assert env["LD_LIBRARY_PATH"] == "/host-libraries"
+    assert "clang version 16.0.6" in result["version"]
+    assert "-fuse-ld=lld" in env["CGO_LDFLAGS"]
+
+
+def test_file_go_proxy_exposes_lists_only_for_declared_version_metadata(tmp_path):
+    remote = load("remote_worker")
+    proxy, cache = tmp_path / "proxy", tmp_path / "cache"
+    version_dir = proxy / "example.com/tool/@v"
+    version_dir.mkdir(parents=True)
+    (version_dir / "v0.0.5.mod").write_text("module example.com/tool")
+    cached = cache / "example.com/tool/@v"
+    cached.mkdir(parents=True)
+    remote.write_json(cached / "v0.0.5.info", {"Version": "v0.0.5"})
+    remote.write_json(cached / "v9.0.0.info", {"Version": "v9.0.0"})
+    assert remote.complete_go_proxy_lists(proxy, cache) == 1
+    assert (version_dir / "list").read_text() == "v0.0.5\n"
+    assert not (version_dir / "v9.0.0.info").exists()
+
+
 def test_dependency_bundle_mirror_redirect_is_process_local(prepared):
     remote, source, request = prepared
     remote.prepare(request)
@@ -214,6 +352,22 @@ def test_dependency_version_prefers_branch_like_git_clone_not_ambiguous_tag(prep
     selected = remote.dependency_ref(source, "1.0.0")
     assert selected == "refs/heads/1.0.0"
     assert git(source, "rev-parse", selected) != old
+
+
+def test_bpt_parent_declaration_is_verified_before_reporting_success(prepared):
+    remote, _, request = prepared
+    root = remote.owned_root(request["task"])
+    remote.write_json(root / "dependencies.json", {"sonic": {}})
+    assert remote.bpt_declarations(root)["sonic"]["sha256"] is None
+    with pytest.raises(RuntimeError, match="not installed"):
+        remote.bpt_declarations(root, require=True)
+    build = root / "cpp3rdlib/rapidjson/BUILD"
+    build.parent.mkdir(parents=True)
+    build.write_text('deps=["middleware/sonic-cpp:1.1.0@//middleware/sonic-cpp:sonic-cpp"]')
+    assert remote.bpt_declarations(root, require=True)["sonic"]["sha256"] == remote.sha_file(build)
+    build.write_text('deps=["middleware/sonic-cpp:2.0.0@//middleware/sonic-cpp:sonic-cpp"]')
+    with pytest.raises(RuntimeError, match="no longer declares"):
+        remote.bpt_declarations(root, require=True)
 
 
 def test_queued_worker_disappearance_is_unknown_and_does_not_restart(prepared, monkeypatch):

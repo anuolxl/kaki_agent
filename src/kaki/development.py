@@ -482,7 +482,15 @@ class DevelopmentTools:
         existing = await self._find_mr(host, repo, state["branch"], base)
         if existing or a["action"] == "find":
             return ToolResult(
-                json.dumps({"existing_mr": existing, "created_remotely": False}, ensure_ascii=False)
+                json.dumps(
+                    {
+                        "existing_mr": existing,
+                        "created_remotely": False,
+                        "updated_remotely": False,
+                        "note": "Existing MR lookup/reuse does not update its title or description. Use an explicitly configured edit profile and verify with a fresh read.",
+                    },
+                    ensure_ascii=False,
+                )
             )
         receipt = (
             self.workspace.state

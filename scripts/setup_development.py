@@ -145,8 +145,13 @@ def install(args):
             env=env,
             files={str(probe): sha(probe)},
         )
-        pins = {str(scripts / name): sha(scripts / name) for name in ["workflow.py", "remote_worker.py"]}
+        pins = {
+            str(scripts / name): sha(scripts / name)
+            for name in ["workflow.py", "remote_worker.py", "go_cache.py"]
+        }
         for name, action, capability, timeout, flags in [
+            ("devbox-go-cache", "go-cache", "external.write", 1500, ["--task"]),
+            ("devbox-cancel", "cancel", "external.write", 100, ["--task", "--job"]),
             (
                 "devbox-dependencies",
                 "dependencies",
@@ -186,7 +191,28 @@ def install(args):
                 ],
                 capability=capability,
                 timeout=timeout,
-                env=env,
+                env={
+                    **env,
+                    **(
+                        {
+                            k: v
+                            for k, v in commands.get("media-tests", {}).get("env", {}).items()
+                            if k
+                            in {
+                                "PATH",
+                                "GOROOT",
+                                "GOPATH",
+                                "GOMODCACHE",
+                                "GOPROXY",
+                                "GOPRIVATE",
+                                "GONOPROXY",
+                                "GONOSUMDB",
+                            }
+                        }
+                        if name == "devbox-go-cache"
+                        else {}
+                    ),
+                },
                 files=pins,
                 allowArguments=True,
                 allowedFlags=flags,

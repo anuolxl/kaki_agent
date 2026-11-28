@@ -4,7 +4,7 @@ description: 通过已配置SSH Devbox准备隔离源码、编译和测试，并
 metadata:
   kaki:
     required_tools: [kaki_command, kaki_capabilities]
-    required_commands: [devbox-inspect, devbox-prepare, devbox-dependencies, devbox-build, devbox-status]
+    required_commands: [devbox-inspect, devbox-prepare, devbox-dependencies, devbox-go-cache, devbox-build, devbox-status, devbox-cancel]
 ---
 
 先调用 `kaki_capabilities` 确认当前配置的 Devbox profiles，再执行
@@ -30,6 +30,14 @@ Devbox下载SDK的固定Git依赖发生publickey认证失败时，在本机SDK
 通过本机现有认证生成bundle，导入专用目录中的只读源镜像。随后以新job重试构建；
 Git地址替换仅作用于构建进程，不传私钥/Token、不修改全局Git配置。
 
+Media因Devbox私有Go模块认证缺失而停在下载时，调用
+`devbox-go-cache --task <task>`，仅从本机准备go.mod/go.sum声明的模块物料，
+上传并校验归档后使用任务私有file GOPROXY。本机只下载源码，不编译业务。
+需要中止旧构建时用`devbox-cancel --task <task> --job <job>`；它核对owner、
+worker与child进程组后只终止该job。确认旧任务终态后再用新job验证。
+
 操作参数与恢复规则见[编译工作流](references/workflow.md)，需要准备、启动或
 恢复远端任务时读取。先SDK构建/测试，再Media联动；主Agent、模型凭据和SQLite
 仍在本机，Devbox只接收已提交源码、编译命令及状态数据。
+
+Media原生构建前，先用devbox-build的media-deps模式按仓库build.sh锁定模块准备ONNX/WB依赖；SDK原生测试、Media CGO=1编译/ELF解析与Makefile CGO=0单测分开报告，不把Stub测试当生产原生运行。

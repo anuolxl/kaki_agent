@@ -200,7 +200,7 @@ class ToolRegistry:
             self.add(
                 Tool(
                     "kaki_mr",
-                    "Prepare a reviewable MR draft artifact, find an existing MR, or create an approved draft MR. 支持GitHub/Codebase，先准备MR，远端创建需单次授权；不合并、不部署。",
+                    "Prepare a reviewable MR draft artifact, find an existing MR, or create an approved draft MR. Existing MR reuse does not edit title/body. 支持GitHub/Codebase，复用不等于更新；远端创建需单次授权，不合并、不部署。",
                     {
                         "action": {"type": "string", "enum": ["prepare", "find", "create_draft"]},
                         "base": string(),
