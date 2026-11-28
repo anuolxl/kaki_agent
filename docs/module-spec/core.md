@@ -115,3 +115,5 @@ Message新增派生字段native_token_reserve=None，不写入canonical payload�
 verification.status按cwd+规范argv分别取各测试套件最近结果，再聚合；任一套件仍失败/unknown则为failed，不能用最后一个不同的成功测试覆盖。相同命令修复后重跑成功可以消除它之前的失败。commands保留所有真实历史，不删失败证据。两条实际子进程回归分别验证“另一套件通过仍保留失败”和“修复原套件并重跑后通过”。
 
 Devbox新增media-deps模式与NativeDependencyManifest，按锁定Go模块准备ONNX/WB运行库；media-build核对库hash并保存runtime_dependencies/runtime_sdk，media-test按仓库契约使用CGO=0。详细字段与向后兼容见devbox.md；SQLite schema不变。
+
+kaki_mr的find/create复用结果增加updated_remotely=false，表示此调用没有修改已有MR标题或正文；旧记录无该字段仍可读。构造点为DevelopmentTools.mr的existing分支，消费者是模型与UI结果，不新增数据库列。实际编辑必须另走已配置的编辑profile并回读验证。

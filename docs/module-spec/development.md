@@ -67,6 +67,8 @@ Successful branch switch sets `ToolResult.context_refresh=true`. The remainder o
 
 SQLite remains schema3. Existing messages, decisions, tool_runs, context plan and events retain evidence. New optional ToolResult keys do not require a table migration. MR creation records a local exclusive pending receipt before remote I/O; unknown result only permits querying the same source/target, not another create. The remote service still needs its own idempotency guarantees.
 
+MR lookup/reuse returns existing_mr,created_remotely=false,updated_remotely=false. This branch performs no title/body edit even when a new proposal was supplied. Existing-MR edits need an explicitly configured edit profile followed by a fresh readback; descriptions and completion summaries must reflect these separate effects. The added JSON flag is optional for old results and does not change SQLite schema.
+
 ## Skill selection and authorization
 
 Roots, in priority order: `~/.kaki/skills`, project `.kaki/skills`, project `.agents/skills`; later roots override identical IDs. Symlinks may not escape each Skill root. Explicit `$name` and `/skill name` are matched against actual raw user text with an exact name boundary. Rewritten queries cannot forge explicit invocation. Ranking uses original query weight 2, derived query weight 1, BM25 per query, weighted RRF `weight/(60+rank)`, then ID deduplication. Body injection uses existing router topK/injectMax/token budget; a metadata catalog and search tools expose other entries without loading every body.
