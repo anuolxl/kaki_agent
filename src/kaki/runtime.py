@@ -16,7 +16,7 @@ from kaki.checkpoint import Checkpoint
 from kaki.config import Config, safe_error
 from kaki.context import ContextEngine
 from kaki.decisions import DecisionService
-from kaki.loop import AgentLoop, verification_evidence
+from kaki.loop import AgentLoop, verification_evidence, verification_status
 from kaki.permissions import PermissionService
 from kaki.provider import RightCodeProvider
 from kaki.recovery import Recovery
@@ -352,11 +352,7 @@ class Runtime:
                         if item:
                             evidence.append(item)
                     result.verification = {
-                        "status": "not_run"
-                        if not evidence
-                        else "passed"
-                        if evidence[-1]["state"] == "succeeded" and evidence[-1]["exit_code"] == 0
-                        else "failed",
+                        "status": verification_status(evidence),
                         "commands": evidence,
                     }
                     try:

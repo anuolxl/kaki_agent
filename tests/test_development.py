@@ -143,6 +143,11 @@ async def test_profile_integrity_arguments_and_input_approval_binding(workspace,
         args = {"name": "trusted", "arguments": ["--request-file", str(request)]}
         before = await rt.tools.development.prepare_command(args, {})
         assert before.review["inputs"]["env"] == "boe"
+        relative = await rt.tools.development.prepare_command(
+            {"name": "trusted", "arguments": ["--request-file", "request.json"]}, {}
+        )
+        assert relative.argv[-1] == str(request)
+        assert relative.state_token == before.state_token
         request.write_text(json.dumps({"harnessTaskID": "two", "inputs": {"env": "ppe"}}))
         after = await rt.tools.development.prepare_command(args, {})
         assert before != after
@@ -214,6 +219,43 @@ async def test_registered_test_profile_records_real_verification(workspace, conf
         assert result.verification["status"] == "passed"
         assert result.verification["commands"][0]["exit_code"] == 0
         assert "unittest" in result.verification["commands"][0]["command"]
+    finally:
+        await rt.close()
+
+
+@pytest.mark.parametrize("repair_and_rerun", [False, True])
+async def test_distinct_suite_failure_is_not_hidden_by_another_passing_suite(
+    workspace, config, repair_and_rerun
+):
+    (workspace.root / "test_a.py").write_text(
+        "import unittest\nfrom pathlib import Path\nclass A(unittest.TestCase):\n def test_flag(self): self.assertTrue(Path('ready').exists())\n"
+    )
+    (workspace.root / "test_b.py").write_text(
+        "import unittest\nclass B(unittest.TestCase):\n def test_ok(self): self.assertEqual(2+2,4)\n"
+    )
+    for name in ["a", "b"]:
+        config.tools.commands[name] = CommandOptions(
+            description="run fixture suite",
+            argv=[sys.executable, "-m", "unittest", "test_" + name],
+            capability="test.execute",
+        )
+    responses = [
+        ModelResponse(tool_calls=[ToolCall("a1", "kaki_command", {"name": "a"})]),
+        ModelResponse(tool_calls=[ToolCall("b1", "kaki_command", {"name": "b"})]),
+    ]
+    if repair_and_rerun:
+        responses += [
+            ModelResponse(
+                tool_calls=[ToolCall("repair", "kaki_write_file", {"path": "ready", "content": "ready"})]
+            ),
+            ModelResponse(tool_calls=[ToolCall("a2", "kaki_command", {"name": "a"})]),
+        ]
+    rt = Runtime(workspace, config, provider=ScriptedProvider(*responses, ModelResponse(text="done")))
+    try:
+        await rt.initialize(connect_browser=False)
+        result = await rt.run("创建ready并运行测试")
+        assert result.verification["status"] == ("passed" if repair_and_rerun else "failed")
+        assert len(result.verification["commands"]) == (3 if repair_and_rerun else 2)
     finally:
         await rt.close()
 

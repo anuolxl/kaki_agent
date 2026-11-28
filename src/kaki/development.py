@@ -248,6 +248,10 @@ class DevelopmentTools:
     def available_commands(self):
         return {row["name"] for row in self.command_catalog() if row["available"]}
 
+    def command_path(self, value):
+        path = Path(self.expand(value)).expanduser()
+        return (path if path.is_absolute() else self.workspace.root / path).resolve()
+
     def command_arguments(self, profile, values):
         if values and not profile.allow_arguments:
             raise KakiError("此profile不接受附加参数")
@@ -264,7 +268,7 @@ class DevelopmentTools:
                 if flag in profile.path_flags or flag in profile.write_flags:
                     if "=" in arg or i + 1 >= len(values):
                         raise KakiError("文件选项必须使用独立的路径参数")
-                    p = Path(self.expand(values[i + 1])).expanduser().resolve()
+                    p = self.command_path(values[i + 1])
                     if flag in profile.write_flags:
                         if not p.is_relative_to(self.workspace.state / "workflows"):
                             raise KakiError("workflow输出只能写入当前项目state/workflows")
@@ -287,7 +291,7 @@ class DevelopmentTools:
         review = {}
         for i, flag in enumerate(values[:-1]):
             if flag in profile.path_flags:
-                p = Path(self.expand(values[i + 1])).expanduser().resolve()
+                p = self.command_path(values[i + 1])
                 if p.stat().st_size > 8 * 1024 * 1024:
                     raise KakiError("workflow输入超过8 MiB")
                 raw = p.read_bytes()
@@ -323,7 +327,11 @@ class DevelopmentTools:
             if actual != expected:
                 raise KakiError("可信profile依赖文件hash已变化，需由用户重新核对配置：" + str(p))
             checked[str(p)] = actual
-        argv = [self.expand(v) for v in profile.argv + values]
+        suffix = list(values)
+        for i, flag in enumerate(values[:-1]):
+            if flag in profile.path_flags or flag in profile.write_flags:
+                suffix[i + 1] = str(self.command_path(values[i + 1]))
+        argv = [self.expand(v) for v in profile.argv + suffix]
         if not shutil.which(argv[0]):
             raise KakiError("缺少profile执行程序：" + argv[0])
         cwd = Path(self.expand(profile.cwd or "{workspace}")).expanduser().resolve()

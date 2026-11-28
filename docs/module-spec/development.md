@@ -30,6 +30,8 @@ Both camelCase and snake_case keys are accepted; existing provider settings and 
 
 Only `{workspace}` and `{state}` are substituted literally. A command profile is authored in trusted local config; the model cannot create or edit it through these tools. Input file content and pinned script hashes are rechecked after approval. Changed dependencies make the profile unavailable until its administrator reviews and updates the pin.
 
+Relative values of pathFlags/writeFlags resolve from the active workspace root, independent of the App host process cwd, then become canonical absolute argv values. Preflight hashing and actual execution use the same resolved path; tests cover relative/absolute aliases. Output still must be under the project's state/workflows.
+
 ## Tools and interfaces
 
 | Tool | Required parameters / actions | Effect |
