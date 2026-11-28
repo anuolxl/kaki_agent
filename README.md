@@ -145,7 +145,7 @@ uv run python scripts/setup_development.py \
   --devbox-target your-user@your-devbox
 ```
 
-重启 App/TUI 后可输入：`$kaki-devbox-build 在已配置Devbox上验证当前已提交的新分支，先探查环境，SDK构建和测试通过后再联动Media，不发布、不部署、不合入业务MR`。Skill 的 `references/workflow.md` 给出精确参数、日志位置与同一 job 的恢复方式。`devbox-inspect/prepare/build/status` 都通过 `kaki_command` 调用；远端写动作继续遵循单次授权。start/SSH 成功不等于编译成功，以 job 的终态和实际退出码为准。
+重启 App/TUI 后可输入：`$kaki-devbox-build 在已配置Devbox上验证当前已提交的新分支，先探查环境，SDK构建和测试通过后再联动Media，不发布、不部署、不合入业务MR`。Skill 的 `references/workflow.md` 给出精确参数、日志位置与同一 job 的恢复方式。`devbox-inspect/prepare/dependencies/go-cache/build/status/cancel` 都通过 `kaki_command` 调用；远端写动作继续遵循单次授权。Go 缓存准备仅传本次声明的模块物料，不复制凭据或在Mac编译业务。start/SSH 成功不等于编译成功，以 job 的终态和实际退出码为准。
 
 ## 状态与恢复
 

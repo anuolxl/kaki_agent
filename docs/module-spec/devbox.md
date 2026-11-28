@@ -15,6 +15,8 @@ The Agent/Right Code connection, local SQLite and TUI/App remain on macOS. The `
 | devbox-inspect | external.read / 100s | none |
 | devbox-prepare | external.write / 1500s | repo, branch, commit, task |
 | devbox-dependencies | external.write / 1500s | task; nine fixed SDK/parent/BPT BUILD dependencies only |
+| devbox-go-cache | external.write / 1500s | task; materializes declared Go module archives only |
+| devbox-cancel | external.write / 100s | task, job; verifies owned process group |
 | devbox-build | external.write / 100s; starts background job | repo, mode, task, job, sdk-commit, timeout |
 | devbox-status | external.read / 100s | task, job, wait, lines |
 
@@ -48,6 +50,14 @@ If Devbox Git SSH authentication is absent, `devbox-dependencies --task <task>` 
 
 `tests/test_devbox_skill.py` exercises exact bundle→isolated branch, original index/HEAD preservation, dirty/foreign directory refusal, job identity, actual local fixture child exit/log, Python3.5 syntax and target injection rejection. These fixtures do not contact a real Devbox. Real SSH/SDK/Media verification is executed by Kaki through configured profiles and recorded in its session.
 
-`uv run python scripts/setup_development.py --harness <be-vcs> --python <Kaki venv Python> --devbox-target <user@host>` installs the self-contained Skill and five profiles without logging in or starting a build. Restart App/TUI to read changed profiles. Keep the target out of public source; no private keys or model API keys are transferred.
+`uv run python scripts/setup_development.py --harness <be-vcs> --python <Kaki venv Python> --devbox-target <user@host>` installs the self-contained Skill and seven profiles without logging in or starting a build. Restart App/TUI to read changed profiles. Keep the target out of public source; no private keys or model API keys are transferred.
 
 BPT rapidjson 1.1.0 itself declares middleware/sonic-cpp@1.1.0. That fixed source mirror is allowed by the pinned workflow; its declaration is checked on the remote when installed, and must be present and match before an SDK build/test can report success if this mirror was prepared. JobRecord.dependency_declarations={} is optional for old receipts; entries contain the parent BUILD path/SHA256. This reads package metadata without modifying BPT caches.
+
+## Go source cache materialization and cancellation
+
+The actual Devbox has GOPRIVATE/GONOPROXY bypassing proxies, no usable Git SSH identity and an unauthenticated company proxy returning401. devbox-go-cache parses the committed Media/SDK go.mod requirements and main replacements, includes metadata from go.sum and the CI init-patcher v0.0.5 tool, inventories missing remote archives, and copies only declared .mod/.info/.zip files from the local module cache. Missing archives may be downloaded locally with existing local authentication; no local business compilation occurs. A SHA256-checked tar is validated for paths, file types/counts/sizes and exact source commits before extracting into a task-private file GOPROXY. Go continues checking existing go.sum. No credentials, netrc or keys are transferred; no global Go settings or formal modfiles change.
+
+GoProxyManifest{path,bundle_sha256,media_commit,sdk_commit,module_count,file_count} is stored as task/go-proxy.json. Transfer manifest has schema=1 and files{relative_path:size}; maximum3000 required modules/12000 metadata versions/20000 files/8GiB. JobRecord.go_proxy=None is optional for old jobs. The build process sets GOPROXY to that exact directory URI and GONOPROXY=none. The official module reference documents file proxies and GONOPROXY behavior: https://go.dev/ref/mod#environment-variables . Media tests install init-patcher only into task/.tools/bin with Go1.23; the tool install clears the Media modfile GOFLAGS and uses CGO=0, while the actual Media command retains CGO=1 and temporary SDK linkage.
+
+cancel validates task owner, worker cmdline, child parent PID and child process group before SIGTERM. Queued work records a cancellation request and is checked before building; new workers report cancelled with the actual child code, while an older worker may report failed/-15. Cancellation never changes source files or protected refs. It does not claim to roll back completed external side effects. Unknown/reused PIDs are refused.

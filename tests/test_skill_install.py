@@ -68,6 +68,14 @@ def test_development_setup_preserves_custom_protection_and_installs_devbox_profi
     assert dev["allow_push"] is False and "allowPush" not in dev
     assert "feat/user" in dev["protected_branches"] and "master" in dev["protected_branches"]
     assert config["providers"]["openai"]["apiKey"] == "preserved-fixture"
-    for name in ["devbox-inspect", "devbox-prepare", "devbox-dependencies", "devbox-build", "devbox-status"]:
+    for name in [
+        "devbox-inspect",
+        "devbox-prepare",
+        "devbox-dependencies",
+        "devbox-go-cache",
+        "devbox-build",
+        "devbox-status",
+        "devbox-cancel",
+    ]:
         assert config["tools"]["commands"][name]["argv"][0] == str(interpreter)
     assert (home / "skills/kaki-devbox-build/scripts/remote_worker.py").is_file()

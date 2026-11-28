@@ -45,3 +45,7 @@ worker与日志位于`<task>/.kaki-jobs/<job>/`；本机回执在当前项目sta
 脚本按包内容hash安装到本机skill-runtimes，远端worker也按hash保留；开发源文件更新不改正在使用的执行副本。升级时在空闲轮切换profiles并重启加载，不禁用校验，也不删除旧job或日志。远端脚本仅用Python3.5标准库；本机适配器使用Kaki的Python3.12环境。
 
 BPT安装后的rapidjson:1.1.0还声明middleware/sonic-cpp@1.1.0。固定镜像清单包含这第九项：prepare时读取已有远端父BUILD，首次尚未安装允许等待构建下载，SDK成功前必须核验该声明及SHA；不改BPT包。
+
+Media私有Go模块下载停滞时，devbox-go-cache --task <task>仅在Mac下载/读取go.mod/go.sum和replace声明的模块物料，含CI指定init-patcher@v0.0.5；比较远端缓存缺项后传mod/info/zip归档，校验SHA和路径并准备专属file GOPROXY。不会在Mac编译业务，不传凭据，不改全局Go配置。build只覆盖本次环境GONOPROXY=none，Go原有go.sum校验保留。缺失模块版本明确报错，不任意扩大目录或修改正式依赖。
+
+devbox-cancel --task <task> --job <job>仅对经PID/父子关系/进程组核验的本任务发取消信号，未知或复用PID拒绝；新worker终态为cancelled，旧worker可能记录failed/-15。取消后查原job直到终态，再使用新的job ID，源码和产物保留。

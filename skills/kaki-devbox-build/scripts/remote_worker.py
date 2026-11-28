@@ -11,6 +11,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tarfile
 import time
 
 REPOS = {"sdk": "byteview-mp-cpp-sdk", "media": "byteview-mp-media_platform"}
@@ -212,6 +213,110 @@ def go_environment():
     raise RuntimeError("Go 1.23.x was not found; no global Go configuration was changed")
 
 
+def go_cache_info(request):
+    root = owned_root(request["task"])
+    return {
+        "media_commit": read_json(root / "source-media.json")["source_commit"],
+        "sdk_commit": read_json(root / "source-sdk.json")["source_commit"],
+    }
+
+
+def go_escape(value):
+    if not re.match(r"^[A-Za-z0-9_.+!~/-]+$", value) or ".." in value or value.startswith("/"):
+        raise ValueError("invalid module identifier")
+    return "".join("!" + char.lower() if char.isupper() else char for char in value)
+
+
+def go_cache_inventory(request):
+    owned_root(request["task"])
+    env, _ = go_environment()
+    cache = pathlib.Path(command(["go", "env", "GOMODCACHE"], env=env)) / "cache" / "download"
+    modules = request["modules"]
+    if len(modules) > 3000:
+        raise ValueError("too many modules")
+    missing = []
+    for item in modules:
+        directory = cache / go_escape(item["path"]) / "@v"
+        if any(
+            not (directory / (go_escape(item["version"]) + suffix)).is_file()
+            for suffix in [".mod", ".info", ".zip"]
+        ):
+            missing.append(item)
+    return {"missing": missing, "module_count": len(modules)}
+
+
+def go_cache_upload(request):
+    root = owned_root(request["task"])
+    if go_cache_info(request) != {key: request[key] for key in ["media_commit", "sdk_commit"]}:
+        raise RuntimeError("Go cache source commits differ")
+    if not re.match(r"^[0-9a-f]{64}$", request["bundle_sha256"]):
+        raise ValueError("invalid Go cache bundle hash")
+    directory = root / ".go-cache-transfers"
+    directory.mkdir(mode=0o700, exist_ok=True)
+    return {"path": str(directory / (request["bundle_sha256"] + ".tar"))}
+
+
+def prepare_go_cache(request):
+    root = owned_root(request["task"])
+    archive = pathlib.Path(go_cache_upload(request)["path"])
+    if sha_file(archive) != request["bundle_sha256"]:
+        raise RuntimeError("Go module archive checksum mismatch")
+    destination = root / ".go-proxy" / request["bundle_sha256"]
+    if destination.is_symlink():
+        raise RuntimeError("Go proxy cannot be a symlink")
+    destination.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with tarfile.open(str(archive), "r") as tar:
+        members = tar.getmembers()
+        if len(members) > 20000 or sum(m.size for m in members) > 8 * 1024**3:
+            raise ValueError("Go module archive exceeds limits")
+        entry = tar.getmember(".kaki-go-cache-manifest.json")
+        if (
+            not entry.isfile()
+            or entry.size > 2 * 1024 * 1024
+            or len({m.name for m in members}) != len(members)
+        ):
+            raise ValueError("invalid module manifest/duplicate member")
+        manifest = json.loads(tar.extractfile(entry).read().decode())
+        if any(manifest[key] != request[key] for key in ["media_commit", "sdk_commit"]):
+            raise RuntimeError("Go module manifest commit mismatch")
+        for member in members:
+            name = member.name
+            if name == ".kaki-go-cache-manifest.json":
+                continue
+            if (
+                not member.isfile()
+                or name.startswith("/")
+                or ".." in pathlib.PurePosixPath(name).parts
+                or name not in manifest["files"]
+                or member.size != manifest["files"][name]
+                or not re.match(r"^[A-Za-z0-9_.+!~/-]+/@v/[A-Za-z0-9_.+!~-]+\.(mod|info|zip)$", name)
+            ):
+                raise ValueError("unsafe/unlisted module archive member")
+        for member in members:
+            if member.name == ".kaki-go-cache-manifest.json":
+                continue
+            target = destination / member.name
+            target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if target.is_symlink():
+                raise RuntimeError("module cache target is a symlink")
+            if not target.exists():
+                temporary = str(target) + ".part-" + str(os.getpid())
+                with tar.extractfile(member) as source, open(temporary, "wb") as output:
+                    shutil.copyfileobj(source, output)
+                os.chmod(temporary, 0o600)
+                os.replace(temporary, str(target))
+    result = {
+        "path": str(destination),
+        "bundle_sha256": request["bundle_sha256"],
+        "media_commit": request["media_commit"],
+        "sdk_commit": request["sdk_commit"],
+        "module_count": manifest["module_count"],
+        "file_count": manifest["file_count"],
+    }
+    write_json(root / "go-proxy.json", result)
+    return result
+
+
 def dependency_target(request):
     name = request["dependency"]
     if name not in DEPENDENCIES or not re.match(r"^[0-9a-f]{40}$", request["commit"]):
@@ -325,6 +430,23 @@ def build_plan(spec, root, jobdir):
         sdk = pathlib.Path(sdk_record["path"])
         if sdk_record["source_commit"] != spec.get("sdk_commit"):
             raise RuntimeError("linked SDK commit mismatch")
+        proxy_record = root / "go-proxy.json"
+        if proxy_record.is_file():
+            proxy = read_json(proxy_record)
+            if (
+                proxy["media_commit"] != record["source_commit"]
+                or proxy["sdk_commit"] != sdk_record["source_commit"]
+            ):
+                raise RuntimeError("Go module cache source commits differ; prepare the matching cache")
+            proxy_path = pathlib.Path(proxy["path"])
+            if str(proxy_path.parent) != str(root / ".go-proxy") or proxy_path.is_symlink():
+                raise RuntimeError("Go module proxy path changed")
+            env["GOPROXY"] = proxy_path.as_uri()
+            env["GONOPROXY"] = "none"
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        env["GIT_SSH_COMMAND"] = (
+            "ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=2"
+        )
         sdk_build = read_json(root / "sdk-build-artifacts.json")
         if sdk_build["source_commit"] != sdk_record["source_commit"]:
             raise RuntimeError("SDK artifact provenance differs from the linked source")
@@ -382,6 +504,9 @@ def worker(jobfile):
     lock = open(str(root / ".build.lock"), "a+")
     try:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        if (jobfile.parent / "cancel.request.json").exists():
+            data.update(status="cancelled", ended=now())
+            return
         data.update(status="running", pid=os.getpid(), started=now())
         write_json(jobfile, data)
         checkout, argv, env, version, linked = build_plan(data, root, jobfile.parent)
@@ -411,6 +536,35 @@ def worker(jobfile):
                 )
                 if setup.returncode:
                     raise RuntimeError("blade init failed: " + str(setup.returncode))
+            if (jobfile.parent / "cancel.request.json").exists():
+                data.update(status="cancelled", ended=now())
+                return
+            if data["mode"] == "media-test":
+                tools = root / ".tools" / "bin"
+                tools.mkdir(mode=0o700, parents=True, exist_ok=True)
+                env["GOBIN"] = str(tools)
+                env["PATH"] = str(tools) + os.pathsep + env.get("PATH", "")
+                if not (tools / "init-patcher").is_file():
+                    data["phase"] = "prepare-test-tool"
+                    write_json(jobfile, data)
+                    tool_env = env.copy()
+                    tool_env["GOFLAGS"] = ""
+                    tool_env["CGO_ENABLED"] = "0"
+                    setup = subprocess.run(
+                        [
+                            "go",
+                            "install",
+                            "code.byted.org/tikcast/wallet_scripts/init-patcher/cmd/init-patcher@v0.0.5",
+                        ],
+                        cwd=str(jobfile.parent),
+                        env=tool_env,
+                        stdout=log,
+                        stderr=subprocess.STDOUT,
+                        timeout=300,
+                    )
+                    if setup.returncode:
+                        raise RuntimeError("init-patcher installation failed: " + str(setup.returncode))
+            data["go_proxy"] = env.get("GOPROXY") if data["repo"] == "media" else None
             data["phase"] = "compile-or-test"
             process = subprocess.Popen(
                 argv, cwd=str(checkout), env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True
@@ -428,6 +582,8 @@ def worker(jobfile):
                     process.wait()
                 raise RuntimeError("remote build timeout; process group terminated")
         data.update(status="succeeded" if code == 0 else "failed", exit_code=code, ended=now())
+        if (jobfile.parent / "cancel.request.json").exists():
+            data.update(status="cancelled")
         if code == 0 and data["repo"] == "sdk":
             data["dependency_declarations"] = bpt_declarations(root, require=True)
         if code == 0 and data["mode"] == "sdk-build":
@@ -517,6 +673,34 @@ def start(request, runner):
     return data
 
 
+def cancel(request):
+    # 只取消该owner任务的真实构建进程组，PID复用或父子关系不符时拒绝信号。
+    root = owned_root(request["task"])
+    directory = root / ".kaki-jobs" / slug(request["job"])
+    data = read_json(directory / "status.json")
+    if data["status"] not in {"queued", "running"}:
+        return status(request)
+    child, parent = data.get("child_pid"), data.get("pid")
+    if child:
+        worker_cmd = pathlib.Path("/proc") / str(parent) / "cmdline"
+        child_stat = pathlib.Path("/proc") / str(child) / "stat"
+        if (
+            not worker_cmd.is_file()
+            or str(directory / "status.json").encode() not in worker_cmd.read_bytes()
+            or not child_stat.is_file()
+            or int(child_stat.read_text().split()[3]) != parent
+            or os.getpgid(child) != child
+        ):
+            raise RuntimeError("build process ownership changed; cancellation refused")
+    write_json(directory / "cancel.request.json", {"requested": now()})
+    if child:
+        try:
+            os.killpg(child, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    return {"cancel_requested": True, "job": request["job"], "previous_status": data["status"]}
+
+
 def status(request):
     # 读取同一job的终态和有界日志；PID消失只标未知，不当成功，也不重新编译。
     directory = root_for(request["task"]) / ".kaki-jobs" / slug(request["job"])
@@ -564,6 +748,16 @@ def dispatch(request, runner):
         return prepare_dependency(request)
     if action == "start":
         return start(request, runner)
+    if action == "cancel":
+        return cancel(request)
+    if action == "go-cache-info":
+        return go_cache_info(request)
+    if action == "go-cache-inventory":
+        return go_cache_inventory(request)
+    if action == "go-cache-upload":
+        return go_cache_upload(request)
+    if action == "go-cache-prepare":
+        return prepare_go_cache(request)
     if action == "status":
         return status(request)
     raise ValueError("unknown remote action")

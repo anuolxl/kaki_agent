@@ -168,6 +168,66 @@ def test_remote_worker_keeps_python35_syntax_and_no_local_stdlib_shadow():
     ast.parse(probe.REMOTE, feature_version=(3, 5))
 
 
+def test_go_cache_module_selection_and_replacement_are_declared_only():
+    cache = load("go_cache")
+    required = cache.declared_modules("require (\n example.com/Old v1.0.0\n)\n")
+    selected = cache.apply_replacements(required, "replace example.com/Old => example.com/new v1.2.0")
+    assert selected == {("example.com/new", "v1.2.0")}
+    assert cache.escape_module("example.com/SDK") == "example.com/!s!d!k"
+    assert cache.escape_module("git.sr.ht/~sbinet/gg") == "git.sr.ht/~sbinet/gg"
+    with pytest.raises(ValueError):
+        cache.escape_module("../credentials")
+
+
+@pytest.mark.parametrize("unsafe", [False, True])
+def test_go_cache_transfer_checks_commit_and_rejects_archive_escape(prepared, unsafe):
+    import io
+    import json
+    import tarfile
+
+    remote, _, request = prepared
+    remote.prepare(request)
+    root = remote.root_for(request["task"])
+    remote.write_json(root / "source-media.json", {"source_commit": request["commit"]})
+    payload = {"task": request["task"], "media_commit": request["commit"], "sdk_commit": request["commit"]}
+    archive = root / "cache.tar"
+    name = "../foreign.mod" if unsafe else "example.com/pkg/@v/v1.2.3.mod"
+    content = b"module example.com/pkg\n"
+    manifest = {**payload, "file_count": 1, "module_count": 1, "files": {name: len(content)}}
+    with tarfile.open(archive, "w") as tar:
+        for entry_name, value in [
+            (".kaki-go-cache-manifest.json", json.dumps(manifest).encode()),
+            (name, content),
+        ]:
+            entry = tarfile.TarInfo(entry_name)
+            entry.size = len(value)
+            tar.addfile(entry, io.BytesIO(value))
+    payload["bundle_sha256"] = remote.sha_file(archive)
+    shutil.copy2(archive, remote.go_cache_upload(payload)["path"])
+    if unsafe:
+        with pytest.raises(ValueError, match="unsafe"):
+            remote.prepare_go_cache(payload)
+        assert not (root / ".go-proxy/foreign.mod").exists()
+    else:
+        result = remote.prepare_go_cache(payload)
+        assert Path(result["path"], name).read_bytes() == content
+        assert remote.read_json(root / "go-proxy.json")["media_commit"] == request["commit"]
+
+
+def test_cancel_refuses_a_process_without_job_ownership(prepared):
+    import os
+
+    remote, _, request = prepared
+    root = remote.owned_root(request["task"])
+    directory = root / ".kaki-jobs/foreign-process"
+    remote.write_json(
+        directory / "status.json", {"status": "running", "pid": os.getpid(), "child_pid": os.getpid()}
+    )
+    with pytest.raises(RuntimeError, match="ownership changed"):
+        remote.cancel({"task": request["task"], "job": "foreign-process"})
+    assert not (directory / "cancel.request.json").exists()
+
+
 def test_dependency_bundle_mirror_redirect_is_process_local(prepared):
     remote, source, request = prepared
     remote.prepare(request)
