@@ -89,6 +89,31 @@ async def test_real_file_and_shell_loop_and_idempotency(workspace, config):
         await rt.close()
 
 
+async def test_provider_failure_retains_committed_tool_and_test_evidence(workspace, config):
+    from kaki.types import ProviderError
+
+    (workspace.root / "test_case.py").write_text(
+        "import unittest\nclass T(unittest.TestCase):\n def test_ok(self): self.assertTrue(True)\n"
+    )
+    model = ScriptedProvider(
+        ModelResponse(tool_calls=[ToolCall("read", "kaki_read_file", {"path": "test_case.py"})]),
+        ModelResponse(tool_calls=[ToolCall("test", "kaki_exec", {"command": "python3 -m unittest -v"})]),
+        ProviderError("ReadTimeout", "network"),
+    )
+    rt = Runtime(workspace, config, provider=model)
+    try:
+        await rt.initialize(connect_browser=False)
+        result = await rt.run("运行测试")
+        assert result.status == "failed" and result.stop_reason == "network"
+        assert result.tools == 2 and result.tool_failures == 0
+        assert result.verification["status"] == "passed"
+        assert result.verification["commands"][0]["exit_code"] == 0
+        persisted = json.loads((await rt.store.run("turns", rt.session_id))[-1]["result_json"])
+        assert persisted["tools"] == 2 and persisted["verification"] == result.verification
+    finally:
+        await rt.close()
+
+
 @pytest.mark.asyncio
 async def test_cancel_stream_resume_and_continue(workspace, config):
     model = ScriptedProvider(ModelResponse(text="不会到达"))

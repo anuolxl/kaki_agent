@@ -102,6 +102,9 @@ class Checkpoint:
         await self.store.run("snapshot", identity, turn, phase, "creating", None, metadata)
         try:
             await self.ensure()
+            # Exclusions can change between installed versions. Rebuild only our
+            # shadow index so previously indexed ignored Gitlinks cannot leak in.
+            await self.git("read-tree", "--empty")
             await self.git("add", "-A", "--", ".")
             _, staged, _ = await self.git("ls-files", "--stage", "-z")
             if any(x.startswith(b"160000 ") for x in staged.split(b"\0") if x):

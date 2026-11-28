@@ -32,6 +32,7 @@ class Message:
     parts: list[dict[str, Any]] = field(default_factory=list)
     artifacts: list[dict[str, Any]] = field(default_factory=list)
     created_at: str = field(default_factory=now)
+    native_token_reserve: int | None = None
 
     def payload(self) -> dict[str, Any]:
         return {

@@ -58,3 +58,48 @@ async def test_shadow_preserves_bytes_index_and_conflicts(workspace, config):
         assert (root / ".git/HEAD").read_bytes() == head_before
     finally:
         await s.close()
+
+
+async def test_capture_rebuilds_shadow_index_after_new_nested_repo_exclusion(workspace, config):
+    root = workspace.root
+    (root / "source.txt").write_text("source")
+    subprocess.run(["git", "-C", str(root), "add", "source.txt"], check=True)
+    original_index = (root / ".git/index").read_bytes()
+    original_head = (root / ".git/HEAD").read_bytes()
+    nested = root / ".worktrees" / "other-task"
+    nested.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(nested)], check=True)
+    (nested / "user.txt").write_text("unrelated task")
+    subprocess.run(["git", "-C", str(nested), "add", "user.txt"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(nested),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "nested fixture",
+        ],
+        check=True,
+    )
+    store = Store(workspace.state / "nested.sqlite3", workspace.id)
+    await store.open()
+    try:
+        checkpoint = Checkpoint(workspace, store, config)
+        await checkpoint.ensure()
+        await checkpoint.git("add", "-f", "--", ".worktrees/other-task")
+        _, indexed, _ = await checkpoint.git("ls-files", "--stage")
+        assert b"160000" in indexed
+        result = await checkpoint.capture("turn", "before")
+        assert result["state"] == "ready", result
+        tree = await checkpoint.tree(result["commit"])
+        assert "source.txt" in tree and not any(p.startswith(".worktrees/") for p in tree)
+        assert (nested / "user.txt").read_text() == "unrelated task"
+        assert (root / ".git/index").read_bytes() == original_index
+        assert (root / ".git/HEAD").read_bytes() == original_head
+    finally:
+        await store.close()

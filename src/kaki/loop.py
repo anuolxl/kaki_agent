@@ -3,9 +3,56 @@
 from __future__ import annotations
 
 import asyncio
+import shlex
 import time
 
 from kaki.types import Message, ModelResponse, ProviderError, TurnResult
+
+
+def verification_status(commands):
+    latest = {}
+    for command in commands:
+        key = (command["cwd"], tuple(shlex.split(command["command"])))
+        latest[key] = command
+    if not latest:
+        return "not_run"
+    return (
+        "passed"
+        if all(x["state"] == "succeeded" and x["exit_code"] == 0 for x in latest.values())
+        else "failed"
+    )
+
+
+def verification_evidence(runtime, call, result, run_id):
+    if not result.executed:
+        return None
+    command, cwd = None, str(runtime.workspace.root)
+    if call.name == "kaki_exec" and runtime.is_test_command(call.arguments.get("command", "")):
+        command = call.arguments["command"]
+        cwd = str(runtime.workspace.path(call.arguments.get("working_dir", ".")))
+    if call.name == "kaki_command":
+        profile = runtime.config.tools.commands.get(call.arguments.get("name"))
+        if profile and profile.capability == "test.execute":
+            expand = runtime.tools.development.expand
+            command = shlex.join([expand(v) for v in profile.argv + call.arguments.get("arguments", [])])
+            cwd = expand(profile.cwd or "{workspace}")
+    if not command:
+        return None
+    return {
+        "command": command,
+        "cwd": cwd,
+        "exit_code": result.exit_code,
+        "executed": result.executed,
+        "state": "unknown"
+        if result.uncertain
+        else "denied"
+        if result.denied
+        else "failed"
+        if result.failed
+        else "succeeded",
+        "artifacts": result.artifacts,
+        "run_id": run_id,
+    }
 
 
 class AgentLoop:
@@ -135,30 +182,10 @@ class AgentLoop:
                     tool_count += 1
                     failures += int(result.failed)
                     refresh_context = refresh_context or result.context_refresh
-                    if (
-                        result.executed
-                        and call.name == "kaki_exec"
-                        and rt.is_test_command(call.arguments.get("command", ""))
-                    ):
-                        evidence = {
-                            "command": call.arguments["command"],
-                            "cwd": call.arguments.get("working_dir", str(rt.workspace.root)),
-                            "exit_code": result.exit_code,
-                            "executed": result.executed,
-                            "state": "unknown"
-                            if result.uncertain
-                            else "denied"
-                            if result.denied
-                            else "failed"
-                            if result.failed
-                            else "succeeded",
-                            "artifacts": result.artifacts,
-                            "run_id": by_call[call.id]["id"],
-                        }
+                    evidence = verification_evidence(rt, call, result, by_call[call.id]["id"])
+                    if evidence:
                         verification["commands"].append(evidence)
-                        verification["status"] = (
-                            "passed" if result.exit_code == 0 and not result.failed else "failed"
-                        )
+                        verification["status"] = verification_status(verification["commands"])
                     await rt.emit(
                         "tool.finished",
                         turn,

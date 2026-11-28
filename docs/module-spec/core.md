@@ -78,9 +78,9 @@ v0.2 另覆盖 v1→v2 备份迁移、会话归档/恢复/重命名、收尾阶�
 
 快照时机改为首次通过权限的workspace.write或test.execute之前；普通只读对话不建立before/after。测试可产生文件副作用，因此也捕获before。只有存在before才捕获after；关闭程序仍跳过新after。快照失败单独警告，不伪造可恢复性。
 
-权限默认task_scoped：明确的当前人类修改/测试任务可自动获得相应范围；只回答、禁止写入、排除路径及本地read_only配置优先。模型意图、改写、网页、Skill、旧记忆不授权。权限不明确时默认询问；授权once/turn仅当前工作区/会话/Turn，文件范围按目标规范路径，测试按cwd+argv，浏览器交互按完整操作指纹。硬拒绝凭据、Agent配置/指令/Skills控制文件、Git写操作、部署、管理员命令及浏览器任意JS/安装/上传。
+权限默认task_scoped：明确的当前人类修改/测试任务可自动获得相应范围；只回答、禁止写入、排除路径及本地read_only配置优先。模型意图、改写、网页、Skill、旧记忆不授权。权限不明确时默认询问；授权once/turn仅当前工作区/会话/Turn，文件范围按目标规范路径，测试按cwd+argv，浏览器交互按完整操作指纹。硬拒绝凭据、Agent配置/指令/Skills控制文件、直接操作Git内部元数据、部署、管理员命令及浏览器任意JS/安装/上传。v0.4已注册的类型化Git操作另按development契约检查，不属于任意Shell放行。
 
-Shell以argv启动，不再使用bash -c；只支持源码列出的pwd/echo、只读Git和测试模板，其他命令/管道/替换/重定向拒绝。Git禁外部diff/textconv/pager，禁可选index更新，统一排除凭据和Agent配置路径。测试子进程使用当前用户权限，没有OS沙箱，不能保证其内部文件/网络隔离。
+kaki_exec以argv启动，不再使用bash -c；只支持源码列出的pwd/echo、只读Git、测试和格式化模板，其他命令/管道/替换/重定向拒绝。kaki_command执行预先注册并校验的命名profile，不由模型构造任意Shell。Git禁外部diff/textconv/pager，禁可选index更新，统一排除凭据和Agent配置路径。测试子进程使用当前用户权限，没有OS沙箱，不能保证其内部文件/网络隔离。
 
 新测试覆盖9种独立策略组合、单网络尝试、超时/取消、无效来源/约束丢失、原文与Turn保持、模型意图不授权、预检拒绝与配对、授权重试与作用域、等待中取消和并发文件变化、schema3备份迁移、TUI/App实际决策链。
 
@@ -90,3 +90,22 @@ Shell以argv启动，不再使用bash -c；只支持源码列出的pwd/echo、�
 ## v0.4 开发能力补充
 
 开发工具、受信命令、Skill依赖和发现、授权与分支切换后上下文刷新，以[development模块契约](development.md)为准。 新增字段均提供向后兼容默认值，SQLite仍为schema3；旧版关于“不支持Git写操作”的限制仅适用于旧版和kaki_exec模板，不再代表kaki_git/命名profile。
+
+长保护Turn在恢复/组装时可能包含超过窗口的大量工具观察。build_plan在压力下保留原始用户约束和完整调用/结果配对，将较早工具正文投影为可回查占位符，保留最近3个工具正文，再按完整Turn裁剪。新增context plan元数据`elided_tool_ids=[]`记录实际保留ID但正文分页的tool消息；assemble将它们的原文与遗漏消息一起归档并写manifest.archive_ref，SQLite消息不改变。默认空列表兼容旧plan。当前用户/规则/Schema本身超限仍明确失败，不能靠裁剪用户约束假装成功。test_resume_large_protected_tool_turn_pages_observations_without_losing_facts覆盖Curator正常、无效与超时三条路径。
+
+进一步压力来自Responses原生reasoning.encrypted_content，不能只省略工具正文。若仍超限，宿主按完整closed assistant+全部tool-result exchange分页，连同原生项整体归档，保护的初始用户文本与独立assistant最终回答保持原样；最新完整exchange保留，存活exchange的native items逐字不变。新增plan元数据paged_exchange_ids=[]，assemble与active rebalance均使用该策略。单条当前输入/规则/最新exchange本身超限仍失败，绝不拆掉半个工具组或伪造reasoning。
+
+Turn终态的tools/tool_failures/verification统一从已提交tool_runs重建。后续模型ReadTimeout、取消或总结失败不能将前面真实工具数清零或抹掉已经完成的测试；status仍保留failed/cancelled，不把测试通过误当整项任务完成。verification_evidence由loop即时事件与Runtime终态共同消费；没有执行的授权拒绝不算测试验证，external.write平台提交不算测试。test_provider_failure_retains_committed_tool_and_test_evidence覆盖测试已完成后模型超时的持久化结果。
+
+
+## v0.4.2 原生reasoning预算与执行事实
+
+Message新增派生字段native_token_reserve=None，不写入canonical payload；Store.commit_model按接口completion_tokens与reasoning_tokens的较大值构造，历史通过model.committed事件与model_calls用量关联投影，原始messages JSON不改写。Curator临时消息同样记预留值。该值是整次输出token上界，为不可见reasoning保守预留；estimate仅在估算副本中移除对应encrypted_content并加入reserve，实际wire_input和原生项逐字不变。没有可信正用量的旧记录仍按原始wire估算。SQLite保持schema3，无需改表；归档包含派生字段以便审计。tests/test_context.py覆盖密文长度与token用量的区别、wire不变、历史只读关联与原payload保持。下游网关若不准确报告用量，仍可能估算偏差，Provider上下文溢出恢复和最终预算门继续有效。
+
+依据：OpenAI Responses reasoning指南说明reasoning tokens计入输出用量，encrypted_content为可回传的加密状态（https://developers.openai.com/api/docs/guides/reasoning）。本机实际Right Code记录包含reasoning_tokens=10/20/38等，不把密文字节的BPE长度当作真实推理用量。
+
+含原生reasoning的窗口在压力下只移除完整closed exchange，不改写保留的旧工具正文；这样保留项的内容与顺序保持原样，避免修改历史前缀导致上游丢弃reasoning而反复读取。纯文本窗口仍可使用旧工具正文占位策略。此规则同时作用assemble和active rebalance。官方前缀保持指南说明修改旧工具输出可能移除reasoning，删除完整项与追加新项本身不构成相同原因（具体网关仍以实际行为为准）。
+
+快照每次capture重建Kaki自身shadow Git index，再按当前排除规则add；旧版本已进入shadow索引的.worktrees Gitlink不会因新ignore规则而残留。只作用于state/checkpoints影子仓，用户Git index/HEAD/已有工作树文件不变；test_capture_rebuilds_shadow_index_after_new_nested_repo_exclusion验证升级场景。
+
+verification.status按cwd+规范argv分别取各测试套件最近结果，再聚合；任一套件仍失败/unknown则为failed，不能用最后一个不同的成功测试覆盖。相同命令修复后重跑成功可以消除它之前的失败。commands保留所有真实历史，不删失败证据。两条实际子进程回归分别验证“另一套件通过仍保留失败”和“修复原套件并重跑后通过”。

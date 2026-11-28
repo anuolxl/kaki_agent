@@ -8,6 +8,8 @@ This module turns previously unavailable development operations into registered,
 
 `execution.run_process(argv, cwd, timeout, env)` uses argv without a shell, a filtered inherited environment, bounded output and process-group cancellation. Trusted profiles can themselves run Bash/CLI/repository scripts and have their inherent privileges. Tests and Git hooks can execute repository code. Declaring a command `workspace.check` is an administrator trust decision, not a proof of harmlessness.
 
+Only executed `kaki_exec` test templates and command profiles explicitly classified `test.execute` contribute to Turn verification. Profile evidence includes expanded argv (displayed via shlex.join), cwd, exit_code and run_id. An `external.write` test-platform submission returning 0 never becomes a passed test result.
+
 ## Configuration contract
 
 Both camelCase and snake_case keys are accepted; existing provider settings and nonempty environment precedence stay unchanged. `files` is an opaque path→SHA256 mapping, like opaque `env`/`extra_headers` keys.
@@ -28,6 +30,8 @@ Both camelCase and snake_case keys are accepted; existing provider settings and 
 
 Only `{workspace}` and `{state}` are substituted literally. A command profile is authored in trusted local config; the model cannot create or edit it through these tools. Input file content and pinned script hashes are rechecked after approval. Changed dependencies make the profile unavailable until its administrator reviews and updates the pin.
 
+Relative values of pathFlags/writeFlags resolve from the active workspace root, independent of the App host process cwd, then become canonical absolute argv values. Preflight hashing and actual execution use the same resolved path; tests cover relative/absolute aliases. Output still must be under the project's state/workflows.
+
 ## Tools and interfaces
 
 | Tool | Required parameters / actions | Effect |
@@ -41,6 +45,8 @@ Only `{workspace}` and `{state}` are substituted literally. A command profile is
 | kaki_mr | action prepare/find/create_draft; base; title/body for writes | GitHub/Codebase, prepare local artifact first; find/reuse existing MR and journal creation receipt |
 
 Git fetch requires `ref`; create_branch requires `branch` and `base`; stage/commit require 1–100 exact file `paths`, never `.` or directories. Commit requires `message` and staged files exactly matching paths. Foreign staged files block the operation. Push targets the current nonprotected branch only, no force. The original `kaki_exec` test templates remain; `make test ARGS="..."` and one explicit `gofmt -w file.go` are supported.
+
+`log` honors its optional `ref` (default HEAD), with a fixed ten-subject output. Its revision argument is validated rather than silently ignored; a fixture with divergent master/topic histories covers the behavior.
 
 Successful branch switch sets `ToolResult.context_refresh=true`. The remainder of that model's tool batch is answered with unexecuted failure observations; the loop rereads rules/Skills and clears derived code queries before asking the model again. Existing snapshot operations use a separate Git index; `.worktrees/` is excluded from snapshots to preserve unrelated worktrees.
 

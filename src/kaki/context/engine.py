@@ -13,7 +13,7 @@ from kaki.workspace import Workspace
 
 from .archive import Archive
 from .curator import Curator
-from .history import assert_window, canonical, groups, shrink_tool_text, trim
+from .history import assert_window, canonical, groups, page_tool_exchanges, shrink_tool_text, trim
 from .knowledge import Memory, Rules, Skills
 from .tokens import count_text, estimate, excerpt
 
@@ -120,8 +120,16 @@ class ContextEngine:
             else:
                 raise ContextOverflow("未知memory_sections：" + section)
         fixed = replace(system, content=system.content + ("\n\n" + "\n\n".join(extra) if extra else ""))
+        projected = history
+        if estimate([fixed, *closed, user], tools) > budget.input_limit and not any(
+            item.get("type") == "reasoning" for m in closed for item in m.native_items
+        ):
+            # Protected early turns can contain arbitrarily many large observations.
+            # Preserve their user constraints and complete call pairs, but page older
+            # tool bodies out of the active window; archive the exact source below.
+            projected, _ = shrink_tool_text(history, 3)
         selected, validation = trim(
-            history,
+            projected,
             list(ids),
             protected,
             {m.id: manifest.get(str(m.id), {}).get("relevance", 0.5) for m in history},
@@ -130,17 +138,38 @@ class ContextEngine:
             tools,
             budget.input_limit,
         )
+        paged = []
+        if validation["over_by"] and not validation["errors"]:
+            messages, paged = page_tool_exchanges([fixed, *selected, user], tools, budget.input_limit)
+            selected, validation = trim(
+                messages[1:-1],
+                [m.id for m in messages[1:-1]],
+                protected,
+                {},
+                fixed,
+                user,
+                tools,
+                budget.input_limit,
+            )
         if not validation["ok"]:
             raise ContextOverflow(
                 "上下文计划无法通过预算或工具配对：" + json.dumps(validation, ensure_ascii=False)
             )
         messages = [fixed, *selected, user]
         assert_window(messages, tools, budget.input_limit)
+        raw = {m.id: m for m in history}
+        elided = [m.id for m in selected if m.role == "tool" and m.content != raw[m.id].content]
         return AssembledContext(
             messages,
             budget,
             validation["estimated_tokens"],
-            {"validation": validation, "included_ids": [m.id for m in selected], "plan": asdict(plan)},
+            {
+                "validation": validation,
+                "included_ids": [m.id for m in selected],
+                "elided_tool_ids": elided,
+                "paged_exchange_ids": paged,
+                "plan": asdict(plan),
+            },
         )
 
     async def assemble(
@@ -213,11 +242,14 @@ class ContextEngine:
             assembled = await self.build_plan(session, history, user, system, tools, budget, manifest, plan)
             assembled.metadata.update(path="fallback", **fallback)
         selected = set(assembled.metadata["included_ids"])
+        elided = set(assembled.metadata.get("elided_tool_ids", []))
         dropped = [
-            m.id for m in history if m.id not in selected and not manifest[str(m.id)].get("archive_ref")
+            m.id
+            for m in history
+            if (m.id not in selected or m.id in elided) and not manifest[str(m.id)].get("archive_ref")
         ]
         if dropped:
-            ref = await self.archive.save(session, history, dropped, "omitted from model window")
+            ref = await self.archive.save(session, history, dropped, "omitted or paged out of model window")
             for mid in dropped:
                 manifest[str(mid)]["archive_ref"] = ref
             assembled.metadata["archive_ref"] = ref
@@ -252,22 +284,15 @@ class ContextEngine:
             removed = {m.id for m in drop}
             history = [m for m in history if m.id not in removed]
         messages = [system, *history, *tail]
-        messages, elided = shrink_tool_text(messages, 3)
-        if estimate(messages, tools) > window.budget.input_limit:
-            # Archive complete earlier model/tool exchanges within the active Turn, never one side of a call.
-            start = max(i for i, m in enumerate(messages) if m.role == "user")
-            prefix = messages[: start + 1]
-            exchanges = []
-            for m in messages[start + 1 :]:
-                if m.role == "assistant" or not exchanges:
-                    exchanges.append([])
-                exchanges[-1].append(m)
-            while (
-                len(exchanges) > 1
-                and estimate([*prefix, *(m for g in exchanges for m in g)], tools) > window.budget.input_limit
-            ):
-                exchanges.pop(0)
-            messages = [*prefix, *(m for g in exchanges for m in g)]
+        if any(item.get("type") == "reasoning" for m in messages for item in m.native_items):
+            # Editing an earlier tool body changes the prefix of later opaque
+            # reasoning. Remove complete closed items instead; leave survivors exact.
+            elided = 0
+        else:
+            messages, elided = shrink_tool_text(messages, 3)
+        # Protected historical turns may themselves contain large opaque native
+        # reasoning. Page complete exchanges across history and the active tail.
+        messages, paged = page_tool_exchanges(messages, tools, window.budget.input_limit)
         assert_window(messages, tools, window.budget.input_limit)
         retained = {m.id for m in messages}
         removed = [
@@ -290,7 +315,13 @@ class ContextEngine:
             messages,
             window.budget,
             estimate(messages, tools),
-            {**window.metadata, "rebalanced": True, "elided_tool_results": elided, "archive_ref": ref},
+            {
+                **window.metadata,
+                "rebalanced": True,
+                "elided_tool_results": elided,
+                "paged_exchange_ids": paged,
+                "archive_ref": ref,
+            },
         )
         self.last_metadata = result.metadata
         await self.store.run("context_set", session, plan=result.metadata)

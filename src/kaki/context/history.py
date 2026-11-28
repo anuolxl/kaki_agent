@@ -120,6 +120,44 @@ def shrink_tool_text(messages: list[Message], keep: int = 3) -> tuple[list[Messa
     return result, changed
 
 
+def page_tool_exchanges(messages: list[Message], tools: list[dict], limit: int):
+    """Page out closed exchanges, including their opaque native reasoning, under pressure.
+
+    Human messages and standalone assistant answers stay intact. Surviving native
+    items are never edited; the complete latest exchange stays available for the
+    next model request. Exact removed messages are archived by ContextEngine.
+    """
+    exchanges = []
+    i = 0
+    while i < len(messages):
+        m = messages[i]
+        if m.role != "assistant" or not m.tool_calls:
+            i += 1
+            continue
+        expected = {c["id"] for c in m.tool_calls}
+        batch = [m]
+        j = i + 1
+        while j < len(messages) and messages[j].role == "tool":
+            batch.append(messages[j])
+            j += 1
+        if (
+            len(expected) == len(m.tool_calls)
+            and len(batch) == len(expected) + 1
+            and expected == {x.tool_call_id for x in batch[1:]}
+        ):
+            exchanges.append(batch)
+        i = j
+    selected = list(messages)
+    removed = []
+    for batch in exchanges[:-1]:
+        if estimate(selected, tools) <= limit:
+            break
+        identities = {id(m) for m in batch}
+        selected = [m for m in selected if id(m) not in identities]
+        removed.extend(m.id for m in batch if m.id)
+    return selected, removed
+
+
 def assert_window(messages: list[Message], tools: list[dict], limit: int):
     errors = structural_errors(messages)
     if errors:
