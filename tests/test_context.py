@@ -52,6 +52,71 @@ def test_native_budget_paging_keeps_parallel_calls_with_their_reasoning():
     assert selected[1].native_items == history[-3].native_items
 
 
+def test_opaque_reasoning_uses_reported_output_reserve_without_changing_wire():
+    from dataclasses import replace
+
+    from kaki.provider import wire_input
+
+    message = Message(
+        "assistant",
+        native_items=[{"type": "reasoning", "id": "opaque", "encrypted_content": "ciphertext-" * 8000}],
+        native_token_reserve=240,
+    )
+    before = wire_input([message])
+    known = estimate([message], [])
+    unknown = estimate([replace(message, native_token_reserve=None)], [])
+    assert known < 500 and unknown > 10000
+    assert wire_input([message]) == before
+
+
+async def test_legacy_reasoning_usage_is_derived_without_rewriting_transcript(workspace):
+    import json
+    import sqlite3
+
+    store = Store(workspace.state / "usage.sqlite3", workspace.id)
+    await store.open()
+    session = await store.run("new_session")
+    turn, _, _ = await store.run("accept_turn", session, "task")
+    await store.run(
+        "call_record",
+        {
+            "id": "call-usage",
+            "turn_id": turn,
+            "kind": "main",
+            "model": "test",
+            "status": "completed",
+            "usage": {"completion_tokens": 250, "reasoning_tokens": 200},
+        },
+    )
+    message, _ = await store.run(
+        "commit_model",
+        session,
+        turn,
+        ModelResponse(
+            text="done",
+            native_items=[{"type": "reasoning", "id": "r", "encrypted_content": "opaque"}],
+            call_id="call-usage",
+        ),
+    )
+    await store.close()
+    with sqlite3.connect(store.path) as connection:
+        original = connection.execute("select payload from messages where id=?", (message.id,)).fetchone()[0]
+        assert "native_token_reserve" not in json.loads(original)
+    store = Store(store.path, workspace.id)
+    await store.open()
+    try:
+        restored = (await store.run("messages", session))[-1]
+        assert restored.native_token_reserve == 250
+        assert restored.native_items == message.native_items
+    finally:
+        await store.close()
+    with sqlite3.connect(store.path) as connection:
+        assert (
+            connection.execute("select payload from messages where id=?", (message.id,)).fetchone()[0]
+            == original
+        )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["slow", "invalid", "timeout"])
 async def test_curator_fallback_budget_archive_and_raw_history(workspace, config, mode):
@@ -252,6 +317,12 @@ async def test_resume_large_protected_tool_turn_pages_observations_without_losin
                 assert archived[m.id] == m.content
         last_assistant = [m for m in window.messages if m.role == "assistant"][-1]
         assert last_assistant.native_items == [m for m in history if m.role == "assistant"][-1].native_items
+        assert not window.metadata["elided_tool_ids"]
+        assert all(
+            m.content == next(x.content for x in history if x.id == m.id)
+            for m in window.messages
+            if m.role == "tool"
+        )
         persisted = await store.run("messages", session)
         assert [(m.id, m.content) for m in persisted[:-1]] == [(m.id, m.content) for m in history]
     finally:

@@ -168,6 +168,14 @@ class Curator:
                             response.text,
                             tool_calls=[asdict(c) for c in response.tool_calls],
                             native_items=response.native_items,
+                            native_token_reserve=(
+                                max(
+                                    response.usage["completion_tokens"],
+                                    response.usage.get("reasoning_tokens", 0),
+                                )
+                                if response.usage.get("completion_tokens", 0) > 0
+                                else None
+                            ),
                         )
                     )
                     for call in response.tool_calls:

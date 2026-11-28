@@ -121,7 +121,9 @@ class ContextEngine:
                 raise ContextOverflow("未知memory_sections：" + section)
         fixed = replace(system, content=system.content + ("\n\n" + "\n\n".join(extra) if extra else ""))
         projected = history
-        if estimate([fixed, *closed, user], tools) > budget.input_limit:
+        if estimate([fixed, *closed, user], tools) > budget.input_limit and not any(
+            item.get("type") == "reasoning" for m in closed for item in m.native_items
+        ):
             # Protected early turns can contain arbitrarily many large observations.
             # Preserve their user constraints and complete call pairs, but page older
             # tool bodies out of the active window; archive the exact source below.
@@ -282,7 +284,12 @@ class ContextEngine:
             removed = {m.id for m in drop}
             history = [m for m in history if m.id not in removed]
         messages = [system, *history, *tail]
-        messages, elided = shrink_tool_text(messages, 3)
+        if any(item.get("type") == "reasoning" for m in messages for item in m.native_items):
+            # Editing an earlier tool body changes the prefix of later opaque
+            # reasoning. Remove complete closed items instead; leave survivors exact.
+            elided = 0
+        else:
+            messages, elided = shrink_tool_text(messages, 3)
         # Protected historical turns may themselves contain large opaque native
         # reasoning. Page complete exchanges across history and the active tail.
         messages, paged = page_tool_exchanges(messages, tools, window.budget.input_limit)

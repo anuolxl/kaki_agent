@@ -235,9 +235,26 @@ class Store:
 
     def _messages(self, session: str) -> list[Message]:
         self._session(session)
+        # Derive accounting for legacy messages from their immutable call/event
+        # records; never rewrite the original transcript merely to resume it.
+        reserves = {}
+        for row in self.db.execute(
+            "SELECT e.payload,c.usage FROM events e JOIN model_calls c "
+            "ON c.id=json_extract(e.payload,'$.model_call_id') "
+            "WHERE e.session_id=? AND e.type='model.committed'",
+            (session,),
+        ):
+            usage = json.loads(row["usage"] or "{}")
+            value = usage.get("completion_tokens")
+            if type(value) is int and value > 0:
+                reserves[json.loads(row["payload"])["message_id"]] = max(
+                    value, usage.get("reasoning_tokens", 0)
+                )
         result = []
         for row in self.db.execute("SELECT * FROM messages WHERE session_id=? ORDER BY seq", (session,)):
             p = json.loads(row["payload"])
+            if p.get("native_token_reserve") is None and row["id"] in reserves:
+                p["native_token_reserve"] = reserves[row["id"]]
             result.append(
                 Message(
                     **p, id=row["id"], session_id=session, turn_id=row["turn_id"], created_at=row["created"]
@@ -256,6 +273,11 @@ class Store:
                     response.text,
                     tool_calls=[asdict(c) for c in response.tool_calls],
                     native_items=response.native_items,
+                    native_token_reserve=(
+                        max(response.usage["completion_tokens"], response.usage.get("reasoning_tokens", 0))
+                        if response.usage.get("completion_tokens", 0) > 0
+                        else None
+                    ),
                 ),
             )
             runs = []

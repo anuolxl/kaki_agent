@@ -6,6 +6,7 @@ import asyncio
 import base64
 import contextlib
 import io
+import json
 import re
 
 from PIL import Image
@@ -15,13 +16,13 @@ from kaki.checkpoint import Checkpoint
 from kaki.config import Config, safe_error
 from kaki.context import ContextEngine
 from kaki.decisions import DecisionService
-from kaki.loop import AgentLoop
+from kaki.loop import AgentLoop, verification_evidence
 from kaki.permissions import PermissionService
 from kaki.provider import RightCodeProvider
 from kaki.recovery import Recovery
 from kaki.store import Store
 from kaki.tools import Tool, ToolRegistry, integer, string
-from kaki.types import Event, InteractionRequired, KakiError, TurnResult
+from kaki.types import Event, InteractionRequired, KakiError, ToolCall, ToolResult, TurnResult
 from kaki.understanding import UnderstandingService
 from kaki.workspace import Workspace, WorkspaceLease
 
@@ -231,8 +232,6 @@ class Runtime:
                 previous = next(row for row in rows if row["id"] == accepted)
                 if previous["status"] not in {"completed", "failed", "interrupted", "cancelled"}:
                     raise KakiError("此请求已经被接受且尚未结束；不重复执行")
-                import json
-
                 data = json.loads(previous["result_json"] or "{}")
                 if "turn_id" not in data:
                     raise KakiError("此请求已中断；请查看恢复信息并提交新请求")
@@ -339,6 +338,27 @@ class Runtime:
                     result.before_snapshot = before
                     result.after_snapshot = after
                     result.usage = await self.store.run("usage", turn)
+                    # Loop exceptions must not erase already committed executions/tests.
+                    runs = await self.store.run("tool_runs", turn)
+                    committed = [row for row in runs if row["result_json"]]
+                    result.tools = len(committed)
+                    result.tool_failures = 0
+                    evidence = []
+                    for row in committed:
+                        observation = ToolResult(**json.loads(row["result_json"]))
+                        result.tool_failures += int(observation.failed)
+                        call = ToolCall(row["tool_call_id"], row["name"], json.loads(row["arguments"]))
+                        item = verification_evidence(self, call, observation, row["id"])
+                        if item:
+                            evidence.append(item)
+                    result.verification = {
+                        "status": "not_run"
+                        if not evidence
+                        else "passed"
+                        if evidence[-1]["state"] == "succeeded" and evidence[-1]["exit_code"] == 0
+                        else "failed",
+                        "commands": evidence,
+                    }
                     try:
                         await self.context.after_turn(self.session_id, user, result)
                     except Exception as exc:
