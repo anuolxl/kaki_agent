@@ -228,6 +228,25 @@ def test_cancel_refuses_a_process_without_job_ownership(prepared):
     assert not (directory / "cancel.request.json").exists()
 
 
+def test_sdk_runtime_runner_preserves_arguments_without_polluting_host_tools(tmp_path):
+    remote = load("remote_worker")
+    sdk = tmp_path / "sdk libs"
+    sdk.mkdir()
+    loader = sdk / "ld-linux-x86-64.so.2"
+    loader.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+    loader.chmod(0o700)
+    job = tmp_path / "job"
+    job.mkdir()
+    runner = remote.sdk_runtime_runner(job, sdk, [str(sdk), "/opt/known libs"])
+    result = subprocess.check_output([str(runner), "/tmp/test binary", "-test.run=RTC test"], text=True)
+    assert result.splitlines() == [
+        "--library-path",
+        str(sdk) + ":/opt/known libs",
+        "/tmp/test binary",
+        "-test.run=RTC test",
+    ]
+
+
 def test_dependency_bundle_mirror_redirect_is_process_local(prepared):
     remote, source, request = prepared
     remote.prepare(request)

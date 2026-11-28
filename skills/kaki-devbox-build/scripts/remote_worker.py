@@ -7,6 +7,7 @@ import json
 import os
 import pathlib
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -395,6 +396,23 @@ def dependency_environment(root, env):
     env["GIT_CONFIG_PARAMETERS"] = " ".join(parameters).strip()
 
 
+def sdk_runtime_runner(jobdir, artifact_root, libdirs):
+    # 新SDK含glibc；仅测试二进制用配套loader，不能污染Go/Git/编译器进程。
+    loader = artifact_root / "ld-linux-x86-64.so.2"
+    if not loader.is_file():
+        raise RuntimeError("SDK runtime loader is missing")
+    runner = jobdir / "kaki-sdk-runtime"
+    runner.write_text(
+        "#!/bin/sh\nexec "
+        + shlex.quote(str(loader))
+        + " --library-path "
+        + shlex.quote(os.pathsep.join(libdirs))
+        + ' "$@"\n'
+    )
+    runner.chmod(0o700)
+    return runner
+
+
 def build_plan(spec, root, jobdir):
     # 固定repo/mode映射到真实命令；Media用临时modfile链接本次SDK，正式依赖保持。
     repo, mode = spec["repo"], spec["mode"]
@@ -477,13 +495,25 @@ def build_plan(spec, root, jobdir):
         env["GOWORK"] = "off"
         env["CGO_ENABLED"] = "1"
         libdirs = [str(library.parent), "/opt/tiger/byteview/rtc/worker/lib"]
-        env["LD_LIBRARY_PATH"] = os.pathsep.join(libdirs + [env.get("LD_LIBRARY_PATH", "")])
-        env["CGO_LDFLAGS"] = "-L" + str(library.parent) + " " + env.get("CGO_LDFLAGS", "")
+        # 运行库路径只交给运行器；SDK的libc进入LD_LIBRARY_PATH会让宿主Git崩溃。
+        env["CGO_LDFLAGS"] = (
+            "-L"
+            + str(library.parent)
+            + " -Wl,-rpath-link,"
+            + str(library.parent)
+            + " "
+            + env.get("CGO_LDFLAGS", "")
+        )
         includes = [artifact_root / "include", pathlib.Path("/opt/tiger/byteview/rtc/worker/lib/include")]
         env["CGO_CFLAGS"] = " ".join("-I" + str(p) for p in includes) + " " + env.get("CGO_CFLAGS", "")
         env["CGO_CXXFLAGS"] = env["CGO_CFLAGS"] + " " + env.get("CGO_CXXFLAGS", "")
         argv = (
-            ["make", "test", "ARGS=./business_module/... -count=1"]
+            [
+                "make",
+                "test",
+                "ARGS=./business_module/... -count=1 -exec="
+                + str(sdk_runtime_runner(jobdir, artifact_root, libdirs)),
+            ]
             if mode == "media-test"
             else ["go", "build", "-o", str(jobdir / "byteview_mp_media_platform"), "."]
         )
@@ -613,6 +643,12 @@ def worker(jobfile):
                 )
         if code == 0 and data["mode"] == "media-build":
             binary = jobfile.parent / "byteview_mp_media_platform"
+            patcher = root / ".blade_tools" / "tools" / "patchelf"
+            library_root = pathlib.Path(linked["library"]).parent
+            command(
+                [str(patcher), "--set-interpreter", str(library_root / "ld-linux-x86-64.so.2"), str(binary)]
+            )
+            command([str(patcher), "--set-rpath", str(library_root), str(binary)])
             data["artifacts"] = [
                 {"path": str(binary), "sha256": sha_file(binary), "size": binary.stat().st_size}
             ]
