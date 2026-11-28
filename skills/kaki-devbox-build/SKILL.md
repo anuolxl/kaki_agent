@@ -25,7 +25,7 @@ SDK先验证原生库构建与回调测试，再验证Media Platform；若需要
 只使用隔离验证modfile/环境覆盖，不改正式依赖或发布版本。保留完整日志，
 报告source commit、实际命令、工具链、退出码、测试范围和未验证项。
 
-Devbox下载SDK的三个cpputil Git依赖发生publickey认证失败时，在本机SDK
+Devbox下载SDK的固定Git依赖发生publickey认证失败时，在本机SDK
 项目调用`devbox-dependencies --task <同一task>`：只读取BUILD声明的固定版本，
 通过本机现有认证生成bundle，导入专用目录中的只读源镜像。随后以新job重试构建；
 Git地址替换仅作用于构建进程，不传私钥/Token、不修改全局Git配置。

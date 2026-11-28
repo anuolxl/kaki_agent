@@ -111,7 +111,20 @@ async def main(args):
             "GIT_SSH_COMMAND": "ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=2",
         }
         for name, dependency in sorted(DEPENDENCIES.items()):
-            if dependency["repo"] + ":" + dependency["ref"] + "@" not in build:
+            declaration = build
+            if dependency.get("parent"):
+                parent = dependency["parent"]
+                viewed = await run_process(
+                    ["git", "show", DEPENDENCIES[parent]["ref"] + ":BUILD"],
+                    args.state / ("dependency-" + parent + ".git"),
+                    15,
+                )
+                if viewed["exit_code"]:
+                    raise ValueError("fixed parent dependency BUILD is unavailable")
+                declaration = viewed["stdout"]
+            if not re.search(
+                re.escape(dependency["repo"] + ":" + dependency["ref"]) + r"(?=@|[\"'])", declaration
+            ):
                 raise ValueError("SDK BUILD dependency differs from the fixed workflow: " + name)
             cache = args.state / ("dependency-" + name + ".git")
             if not cache.exists():

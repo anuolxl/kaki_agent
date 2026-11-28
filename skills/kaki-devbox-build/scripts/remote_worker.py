@@ -16,6 +16,8 @@ import time
 REPOS = {"sdk": "byteview-mp-cpp-sdk", "media": "byteview-mp-media_platform"}
 DEPENDENCIES = {
     "log": {"repo": "cpputil/log", "ref": "1.0.0-streamlog"},
+    "log_sdk": {"repo": "log_market/CppLogSDK", "ref": "master", "parent": "log"},
+    "metrics2": {"repo": "cpputil/metrics2", "ref": "dev"},
     "metrics_sdk": {"repo": "cpputil/metrics_sdk", "ref": "v1.3.13"},
     "program": {"repo": "cpputil/program", "ref": "1.0.0"},
 }
@@ -173,7 +175,7 @@ def dependency_target(request):
 
 
 def prepare_dependency(request):
-    # 仅导入SDK已声明的三个Git依赖；源用户无需把任何SSH凭据传给Devbox。
+    # 仅导入SDK/固定父依赖已声明的Git源码；不把SSH凭据传给Devbox。
     root = owned_root(request["task"])
     expected = DEPENDENCIES[request["dependency"]]
     source = pathlib.Path(dependency_target(request)["path"])
