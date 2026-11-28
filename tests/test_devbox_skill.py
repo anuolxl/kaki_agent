@@ -216,6 +216,22 @@ def test_dependency_version_prefers_branch_like_git_clone_not_ambiguous_tag(prep
     assert git(source, "rev-parse", selected) != old
 
 
+def test_bpt_parent_declaration_is_verified_before_reporting_success(prepared):
+    remote, _, request = prepared
+    root = remote.owned_root(request["task"])
+    remote.write_json(root / "dependencies.json", {"sonic": {}})
+    assert remote.bpt_declarations(root)["sonic"]["sha256"] is None
+    with pytest.raises(RuntimeError, match="not installed"):
+        remote.bpt_declarations(root, require=True)
+    build = root / "cpp3rdlib/rapidjson/BUILD"
+    build.parent.mkdir(parents=True)
+    build.write_text('deps=["middleware/sonic-cpp:1.1.0@//middleware/sonic-cpp:sonic-cpp"]')
+    assert remote.bpt_declarations(root, require=True)["sonic"]["sha256"] == remote.sha_file(build)
+    build.write_text('deps=["middleware/sonic-cpp:2.0.0@//middleware/sonic-cpp:sonic-cpp"]')
+    with pytest.raises(RuntimeError, match="no longer declares"):
+        remote.bpt_declarations(root, require=True)
+
+
 def test_queued_worker_disappearance_is_unknown_and_does_not_restart(prepared, monkeypatch):
     remote, _, request = prepared
     root = remote.owned_root(request["task"])

@@ -43,3 +43,5 @@ SDK构建输出另存该job的sdk-output目录并记录库SHA，避免随后buil
 worker与日志位于`<task>/.kaki-jobs/<job>/`；本机回执在当前项目state/workflows/devbox。Agent退出或SSH断开不取消后台构建，恢复后查询同一job；超时由worker终止自己的构建进程组。完成报告保留主机、源码SHA、新分支、实际argv、日志路径、退出码、SDK库SHA及联动modfile信息。SDK发布、服务部署与MR合并不是本Skill动作。
 
 脚本按包内容hash安装到本机skill-runtimes，远端worker也按hash保留；开发源文件更新不改正在使用的执行副本。升级时在空闲轮切换profiles并重启加载，不禁用校验，也不删除旧job或日志。远端脚本仅用Python3.5标准库；本机适配器使用Kaki的Python3.12环境。
+
+BPT安装后的rapidjson:1.1.0还声明middleware/sonic-cpp@1.1.0。固定镜像清单包含这第九项：prepare时读取已有远端父BUILD，首次尚未安装允许等待构建下载，SDK成功前必须核验该声明及SHA；不改BPT包。

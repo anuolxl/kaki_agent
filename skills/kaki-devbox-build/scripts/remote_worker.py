@@ -23,6 +23,7 @@ DEPENDENCIES = {
     "consul": {"repo": "cpputil/consul", "ref": "1.0.0", "parent": "program"},
     "monitoring": {"repo": "inf/monitoring-commons-cpp", "ref": "v1.0.30", "parent": "metrics_sdk"},
     "env": {"repo": "cpputil/env", "ref": "master", "parent": "metrics_sdk"},
+    "sonic": {"repo": "middleware/sonic-cpp", "ref": "1.1.0", "bpt_parent": "cpp3rdlib/rapidjson"},
 }
 
 
@@ -48,6 +49,26 @@ def dependency_ref(repository, version):
         except RuntimeError:
             pass
     raise RuntimeError("fixed dependency branch/tag is missing")
+
+
+def bpt_declarations(root, require=False):
+    # BPT包安装后也可能继续引用Git源码；成功前核验实际父BUILD，不改包内容。
+    result = {}
+    manifest = root / "dependencies.json"
+    prepared = read_json(manifest) if manifest.is_file() else {}
+    for name, item in DEPENDENCIES.items():
+        if not item.get("bpt_parent"):
+            continue
+        path = root / item["bpt_parent"] / "BUILD"
+        if not path.is_file():
+            if require and name in prepared:
+                raise RuntimeError("BPT dependency declaration is not installed: " + name)
+            result[name] = {"path": str(path), "sha256": None}
+            continue
+        if item["repo"] + ":" + item["ref"] + "@" not in path.read_text():
+            raise RuntimeError("BPT parent BUILD no longer declares fixed dependency: " + name)
+        result[name] = {"path": str(path), "sha256": sha_file(path)}
+    return result
 
 
 def now():
@@ -205,6 +226,7 @@ def prepare_dependency(request):
     # 仅导入SDK/固定父依赖已声明的Git源码；不把SSH凭据传给Devbox。
     root = owned_root(request["task"])
     expected = DEPENDENCIES[request["dependency"]]
+    bpt = bpt_declarations(root)
     source = pathlib.Path(dependency_target(request)["path"])
     if sha_file(source) != request["bundle_sha256"]:
         raise RuntimeError("dependency bundle checksum mismatch")
@@ -227,6 +249,8 @@ def prepare_dependency(request):
         "bundle_sha256": request["bundle_sha256"],
         "path": str(destination),
     }
+    if request["dependency"] in bpt:
+        record["declaration"] = bpt[request["dependency"]]
     manifest_path = root / "dependencies.json"
     manifest = read_json(manifest_path) if manifest_path.is_file() else {}
     manifest[request["dependency"]] = record
@@ -287,6 +311,7 @@ def build_plan(spec, root, jobdir):
         raise RuntimeError("source tracked files changed before build; not discarded")
     env, version, linked = os.environ.copy(), None, None
     if repo == "sdk":
+        bpt_declarations(root)
         dependency_environment(root, env)
         official_blade = pathlib.Path("/opt/tiger/typhoon-blade/blade")
         if official_blade.is_file():
@@ -403,6 +428,8 @@ def worker(jobfile):
                     process.wait()
                 raise RuntimeError("remote build timeout; process group terminated")
         data.update(status="succeeded" if code == 0 else "failed", exit_code=code, ended=now())
+        if code == 0 and data["repo"] == "sdk":
+            data["dependency_declarations"] = bpt_declarations(root, require=True)
         if code == 0 and data["mode"] == "sdk-build":
             # SDK test clears checkout/output. Keep build artifacts with this job
             # so later tests cannot remove the libraries used by linked Media.

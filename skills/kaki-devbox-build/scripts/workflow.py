@@ -112,7 +112,8 @@ async def main(args):
         }
         for name in dependency_order():
             dependency = DEPENDENCIES[name]
-            declaration = build
+            # BPT父包在远端安装；由worker在存在时检查并在构建成功前强制复核。
+            declaration = None if dependency.get("bpt_parent") else build
             if dependency.get("parent"):
                 parent = dependency["parent"]
                 parent_cache = args.state / ("dependency-" + parent + ".git")
@@ -125,7 +126,7 @@ async def main(args):
                 if viewed["exit_code"]:
                     raise ValueError("fixed parent dependency BUILD is unavailable")
                 declaration = viewed["stdout"]
-            if not re.search(
+            if declaration is not None and not re.search(
                 re.escape(dependency["repo"] + ":" + dependency["ref"]) + r"(?=@|[\"'])", declaration
             ):
                 raise ValueError("SDK BUILD dependency differs from the fixed workflow: " + name)
