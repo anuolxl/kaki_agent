@@ -4,6 +4,8 @@ Python 3.12 本地编码 Agent。默认打开简易桌面 App：工作区与会�
 
 v0.3 增加独立、可切换策略的意图识别与 Query 改写（默认 hybrid、共享最多一次额外模型尝试、10秒超时回退），以及两种界面共用的任务权限检查与澄清/授权交互。详细流程、源码、配置、验证和边界见 [任务理解与权限指南](docs/understanding-guide.md)及[模块契约](docs/module-spec/understanding.md)。升级前退出旧 App/TUI；数据库自动备份后迁移至 schema3。
 
+v0.4.4 提供类型化 Git/草稿 MR、受信命令 profiles、Skill 能力检查与可选 Devbox 隔离编译 Skill。主循环、模型和状态仍在本机，远端仅执行指定源码提交的构建/测试任务。契约见 [开发能力](docs/module-spec/development.md)与[Devbox 编译](docs/module-spec/devbox.md)。
+
 与其他Agent对照学习：[Codex、Claude Code和Kaki的意图识别与Query改写](docs/intent-comparison.md)，区分主模型推理、前置QueryPlan、工具/Skill发现和权限分类，并标明公开源码、官方行为及未验证范围。
 
 当前操作手册与截图：[docs/app-guide.md](docs/app-guide.md)。架构：[docs/architecture.md](docs/architecture.md)。数据与接口契约：[core.md](docs/module-spec/core.md)、[app.md](docs/module-spec/app.md)。[v0.1 内核详解](docs/kaki-agent-guide.md)保留历史源代码摘录。
@@ -132,6 +134,19 @@ SKILL
 
 在 TUI 输入 `$python-review 检查当前改动`。当前TUI开头的 `/skill ...` 会被本地命令解析拦截，请使用 `$技能名 ...`；App可以把 `/skill ...` 作为任务文本匹配。Skills 注入是有预算的；不是技能平台下载或可执行插件系统。
 
+### 安装开发与 Devbox Skill
+
+在 Kaki 源码仓执行以下命令。`--python` 指向已安装 Kaki 的虚拟环境解释器；SSH 用户与主机只写入本机配置。省略 `--devbox-target` 时不注册远端命令。安装器备份配置并保留已有保护分支和明确禁用的 push/MR 开关，不登录或自动启动构建。
+
+```bash
+uv run python scripts/setup_development.py \
+  --harness /path/to/be-vcs \
+  --python "$HOME/.local/share/uv/tools/kaki-agent/bin/python" \
+  --devbox-target your-user@your-devbox
+```
+
+重启 App/TUI 后可输入：`$kaki-devbox-build 在已配置Devbox上验证当前已提交的新分支，先探查环境，SDK构建和测试通过后再联动Media，不发布、不部署、不合入业务MR`。Skill 的 `references/workflow.md` 给出精确参数、日志位置与同一 job 的恢复方式。`devbox-inspect/prepare/build/status` 都通过 `kaki_command` 调用；远端写动作继续遵循单次授权。start/SSH 成功不等于编译成功，以 job 的终态和实际退出码为准。
+
 ## 状态与恢复
 
 `~/.kaki/projects/<仓库名>-<规范路径hash>/` 保存 `kaki.sqlite3`、`context/archive/`、`context/traces/`、`artifacts/`、`checkpoints/kaki-shadow.git/`、`browser-profile/`、`browser-output/`。完整原始消息始终保留，模型窗口只是其派生选择。移动仓库会改变 workspace_id，需要显式迁移状态目录；不要直接合并两个项目数据库。
@@ -160,4 +175,4 @@ uv run python scripts/validate_live.py --workspace /tmp/kaki-validation-new/kaki
 
 ## 当前边界
 
-只支持一个 Git 工作区、一个活跃 Turn、Right Code Responses、本地知识与浏览器 MCP。无多 Agent、远程 worker/RPC、跨仓协调、Myna 服务、云端 SkillForge 或完整评测平台。Shell 是宿主机进程，路径检查与少量命令拒绝不是操作系统安全沙箱；仅在可信本地工作区使用。
+每个 Runtime 只支持一个 Git 工作区、一个活跃 Turn，使用 Right Code Responses、本地知识与浏览器 MCP。App 可打开多个项目，项目间不共享会话或写权限。可选 Devbox Skill 使用受控的远端编译 worker；无多 Agent、通用远程 Agent RPC、自动跨仓协调、Myna 服务、云端 SkillForge 或完整评测平台。Shell 是宿主机进程，路径检查与少量命令拒绝不是操作系统安全沙箱；仅在可信本地工作区使用。

@@ -74,13 +74,31 @@ def install(args):
         target.mkdir(exist_ok=True, mode=0o700)
         shutil.copy2(source / name / "SKILL.md", target / "SKILL.md")
         installed.append(name)
-    tools = config.setdefault("tools", {})
-    tools.setdefault("development", {}).update(
-        enabled=True,
-        protectedBranches=["master", "main", "release/*"],
-        allowPush=True,
-        allowMrCreate=True,
+    devbox = skills / "kaki-devbox-build"
+    shutil.copytree(
+        source / "kaki-devbox-build",
+        devbox,
+        dirs_exist_ok=True,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
     )
+    for path in devbox.rglob("*"):
+        path.chmod(0o700 if path.is_dir() else 0o600)
+    installed.append("kaki-devbox-build")
+    tools = config.setdefault("tools", {})
+    development = tools.setdefault("development", {})
+    development["enabled"] = True
+    protected_key = (
+        "protected_branches"
+        if "protected_branches" in development and "protectedBranches" not in development
+        else "protectedBranches"
+    )
+    development[protected_key] = list(
+        dict.fromkeys(development.get(protected_key, []) + ["master", "main", "release/*"])
+    )
+    if "allowPush" not in development and "allow_push" not in development:
+        development["allowPush"] = True
+    if "allowMrCreate" not in development and "allow_mr_create" not in development:
+        development["allowMrCreate"] = True
     commands = tools.setdefault("commands", {})
     harness = args.harness.resolve()
     doctor = harness / "omh/prechecks/omh-doctor.sh"
@@ -95,6 +113,84 @@ def install(args):
         timeout=120,
         files={str(p): sha(p) for p in (doctor, common)},
     )
+    if args.devbox_target:
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+@[A-Za-z0-9_.:-]+", args.devbox_target):
+            raise ValueError("--devbox-target must be user@host")
+        interpreter = str(args.python.expanduser().absolute())
+        source_scripts = devbox / "scripts"
+        package_hash = hashlib.sha256(
+            b"".join(
+                path.name.encode() + b"\0" + path.read_bytes() for path in sorted(source_scripts.glob("*.py"))
+            )
+        ).hexdigest()
+        scripts = home / "skill-runtimes" / "kaki-devbox-build" / package_hash
+        scripts.mkdir(parents=True, exist_ok=True, mode=0o700)
+        for path in sorted(source_scripts.glob("*.py")):
+            destination = scripts / path.name
+            if destination.exists():
+                if destination.read_bytes() != path.read_bytes():
+                    raise ValueError("immutable Skill runtime content mismatch")
+            else:
+                shutil.copy2(path, destination)
+                destination.chmod(0o400)
+        env = {"KAKI_DEVBOX_TARGET": args.devbox_target}
+        if os.environ.get("SSH_AUTH_SOCK"):
+            env["SSH_AUTH_SOCK"] = os.environ["SSH_AUTH_SOCK"]
+        probe = scripts / "devbox_probe.py"
+        commands["devbox-inspect"] = dict(
+            description="登录已配置SSH Devbox读取系统、工具链和仓库元数据，不修改远端业务代码",
+            argv=[interpreter, str(probe)],
+            capability="external.read",
+            timeout=100,
+            env=env,
+            files={str(probe): sha(probe)},
+        )
+        pins = {str(scripts / name): sha(scripts / name) for name in ["workflow.py", "remote_worker.py"]}
+        for name, action, capability, timeout, flags in [
+            (
+                "devbox-dependencies",
+                "dependencies",
+                "external.write",
+                1500,
+                ["--task"],
+            ),
+            (
+                "devbox-prepare",
+                "prepare",
+                "external.write",
+                1500,
+                ["--repo", "--branch", "--commit", "--task"],
+            ),
+            (
+                "devbox-build",
+                "start",
+                "external.write",
+                100,
+                ["--repo", "--mode", "--task", "--job", "--sdk-commit", "--timeout"],
+            ),
+            ("devbox-status", "status", "external.read", 100, ["--task", "--job", "--wait", "--lines"]),
+        ]:
+            commands[name] = dict(
+                description="Devbox隔离编译工作流 "
+                + action
+                + "；固定主机/仓库/模式，不接受任意Shell；启动不代表编译成功",
+                argv=[
+                    interpreter,
+                    str(scripts / "workflow.py"),
+                    "--target",
+                    args.devbox_target,
+                    "--state",
+                    "{state}/workflows/devbox",
+                    "--action",
+                    action,
+                ],
+                capability=capability,
+                timeout=timeout,
+                env=env,
+                files=pins,
+                allowArguments=True,
+                allowedFlags=flags,
+            )
     if args.private_skill_source:
         original = args.private_skill_source.resolve()
         target = skills / "vc-casegen-task"
@@ -140,7 +236,7 @@ profile 的参数是 JSON arguments 数组，禁止将整段 Shell 命令作为�
             p.chmod(0o700 if p.is_dir() else 0o600)
         scripts = target / "scripts"
         pins = {str(p): sha(p) for p in sorted(scripts.glob("*.py"))}
-        interpreter = str(args.python.expanduser().resolve())
+        interpreter = str(args.python.expanduser().absolute())
         if not Path(interpreter).is_file():
             raise ValueError("configured Python executable does not exist")
         profiles = {
@@ -224,6 +320,7 @@ def main():
     parser.add_argument("--harness", type=Path, required=True)
     parser.add_argument("--private-skill-source", type=Path)
     parser.add_argument("--python", type=Path, default=Path(sys.executable))
+    parser.add_argument("--devbox-target", help="可选的已授权SSH目标user@host；不登录、不自动启动远端编译")
     print(json.dumps(install(parser.parse_args()), ensure_ascii=False, indent=2))
 
 

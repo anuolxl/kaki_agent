@@ -1,6 +1,6 @@
 [project]
 name = "kaki-agent"
-version = "0.4.3"
+version = "0.4.4"
 description = "A local Python coding agent with durable sessions and bounded context"
 requires-python = ">=3.12,<3.13"
 license = "Apache-2.0"
@@ -38,6 +38,10 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
 ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# The remote Devbox currently has Python 3.5; do not modernize its stdlib worker.
+"skills/kaki-devbox-build/scripts/remote_worker.py" = ["UP"]
 
 [tool.ruff.format]
 # Source excerpts retain original indentation and line references in the manual.

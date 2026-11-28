@@ -91,6 +91,8 @@ kaki_exec以argv启动，不再使用bash -c；只支持源码列出的pwd/echo�
 
 开发工具、受信命令、Skill依赖和发现、授权与分支切换后上下文刷新，以[development模块契约](development.md)为准。 新增字段均提供向后兼容默认值，SQLite仍为schema3；旧版关于“不支持Git写操作”的限制仅适用于旧版和kaki_exec模板，不再代表kaki_git/命名profile。
 
+远端隔离编译以[Devbox模块契约](devbox.md)为准：SourceRecord、JobRecord、SDK产物清单和本机回执是独立工作流JSON，不新增SQLite表或改写会话原文。命令profile和Skill版本保持SHA256校验；主机由可信本机配置固定。queued/running与succeeded/failed/unknown分别表示远端任务状态，不能把SSH或查询成功转换为测试通过。
+
 长保护Turn在恢复/组装时可能包含超过窗口的大量工具观察。build_plan在压力下保留原始用户约束和完整调用/结果配对，将较早工具正文投影为可回查占位符，保留最近3个工具正文，再按完整Turn裁剪。新增context plan元数据`elided_tool_ids=[]`记录实际保留ID但正文分页的tool消息；assemble将它们的原文与遗漏消息一起归档并写manifest.archive_ref，SQLite消息不改变。默认空列表兼容旧plan。当前用户/规则/Schema本身超限仍明确失败，不能靠裁剪用户约束假装成功。test_resume_large_protected_tool_turn_pages_observations_without_losing_facts覆盖Curator正常、无效与超时三条路径。
 
 进一步压力来自Responses原生reasoning.encrypted_content，不能只省略工具正文。若仍超限，宿主按完整closed assistant+全部tool-result exchange分页，连同原生项整体归档，保护的初始用户文本与独立assistant最终回答保持原样；最新完整exchange保留，存活exchange的native items逐字不变。新增plan元数据paged_exchange_ids=[]，assemble与active rebalance均使用该策略。单条当前输入/规则/最新exchange本身超限仍失败，绝不拆掉半个工具组或伪造reasoning。

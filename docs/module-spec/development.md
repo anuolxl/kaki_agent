@@ -1,5 +1,7 @@
 # Development tools and local Skills (v0.4)
 
+For the optional SSH compilation integration and its request/job schemas, see [Devbox compilation](devbox.md).
+
 This module turns previously unavailable development operations into registered, executable capabilities. A user approval cannot install a tool. Raw `bash` remains outside `kaki_exec`; administrator-configured command profiles execute trusted scripts through a separate entry point. These are application checks, not an OS sandbox.
 
 ## Ownership and call order
