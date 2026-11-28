@@ -14,7 +14,7 @@ The Agent/Right Code connection, local SQLite and TUI/App remain on macOS. The `
 |---|---|---|
 | devbox-inspect | external.read / 100s | none |
 | devbox-prepare | external.write / 1500s | repo, branch, commit, task |
-| devbox-dependencies | external.write / 1500s | task; six fixed SDK/parent BUILD dependencies only |
+| devbox-dependencies | external.write / 1500s | task; eight fixed SDK/parent BUILD dependencies only |
 | devbox-build | external.write / 100s; starts background job | repo, mode, task, job, sdk-commit, timeout |
 | devbox-status | external.read / 100s | task, job, wait, lines |
 
@@ -32,7 +32,7 @@ Prefix arguments fix the action and local state directory. SSH target and agent 
 | SDK build manifest | schema=1,job,source_commit,artifact_root,libraries[{path,sha256,size}] | SDK build copies outputs into its job directory; Media checks source/artifact provenance even after SDK test clears checkout/output |
 | Local receipt | target,request,result | state/workflows/devbox/<task>-<job-or-repo>.json; recovery/audit |
 | Launch receipt | pid required | job/launch.json records the spawned worker independently of its queued/running/terminal status; status uses it to detect a lost queued worker |
-| Dependency manifest | map of log/log_sdk/metrics2/metrics_sdk/program/consul to repo,ref,qualified_ref,source_commit,bundle_sha256,path | local Git read→bundle→remote bare mirror; dependencies.json; worker verifies fixed ref and commit before applying process-local URL rewrites |
+| Dependency manifest | map of log/log_sdk/metrics2/metrics_sdk/program/consul/monitoring/env to repo,ref,qualified_ref,source_commit,bundle_sha256,path | local Git read→bundle→remote bare mirror; dependencies.json; worker verifies fixed ref and commit before applying process-local URL rewrites |
 
 Job phases: queued→running→succeeded/failed. Missing worker without a terminal receipt is unknown; do not replay start. Same job and same mode reuse its result; different repo/mode/SDK cannot reuse that job. Builds sharing one task root acquire a build lock. Startup creates a new session; SSH disconnect/Agent exit does not cancel it. Build child has a 30..7200s deadline and process-group termination on timeout.
 
@@ -44,7 +44,7 @@ Successful SSH/start/status return codes do not imply build success. Only termin
 
 ## Validation and installation
 
-If Devbox Git SSH authentication is absent, `devbox-dependencies --task <task>` reads the six fixed SDK/parent BUILD versions through existing local Git authentication and transfers Git bundles. It does not send credentials or bypass a repository ACL. The worker uses `GIT_CONFIG_PARAMETERS` (compatible with the actual Git2.29 host) to redirect these exact URLs to task-local bare mirrors only for the build child; no global Git config changes or agent forwarding. Parent BUILD declarations are checked in dependency order even on an empty cache. Qualified refs prefer refs/heads over refs/tags, matching git clone -b when both names exist with different commits; qualified_ref is added to new receipts while old receipts remain readable. Unknown dependencies still require their real read access and fail explicitly. Git network operations use BatchMode/connect/keepalive limits instead of waiting indefinitely for interactive authentication.
+If Devbox Git SSH authentication is absent, `devbox-dependencies --task <task>` reads the eight fixed SDK/parent BUILD versions through existing local Git authentication and transfers Git bundles. It does not send credentials or bypass a repository ACL. The worker uses `GIT_CONFIG_PARAMETERS` (compatible with the actual Git2.29 host) to redirect these exact URLs to task-local bare mirrors only for the build child; no global Git config changes or agent forwarding. Parent BUILD declarations are checked in dependency order even on an empty cache. Qualified refs prefer refs/heads over refs/tags, matching git clone -b when both names exist with different commits; qualified_ref is added to new receipts while old receipts remain readable. Unknown dependencies still require their real read access and fail explicitly. Git network operations use BatchMode/connect/keepalive limits instead of waiting indefinitely for interactive authentication.
 
 `tests/test_devbox_skill.py` exercises exact bundle→isolated branch, original index/HEAD preservation, dirty/foreign directory refusal, job identity, actual local fixture child exit/log, Python3.5 syntax and target injection rejection. These fixtures do not contact a real Devbox. Real SSH/SDK/Media verification is executed by Kaki through configured profiles and recorded in its session.
 

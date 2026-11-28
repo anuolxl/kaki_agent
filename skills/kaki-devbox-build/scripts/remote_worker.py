@@ -21,6 +21,8 @@ DEPENDENCIES = {
     "metrics_sdk": {"repo": "cpputil/metrics_sdk", "ref": "v1.3.13"},
     "program": {"repo": "cpputil/program", "ref": "1.0.0"},
     "consul": {"repo": "cpputil/consul", "ref": "1.0.0", "parent": "program"},
+    "monitoring": {"repo": "inf/monitoring-commons-cpp", "ref": "v1.0.30", "parent": "metrics_sdk"},
+    "env": {"repo": "cpputil/env", "ref": "master", "parent": "metrics_sdk"},
 }
 
 
