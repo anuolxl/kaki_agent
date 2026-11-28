@@ -291,6 +291,21 @@ def test_media_uses_sdk_toolchain_without_global_runtime_environment(tmp_path):
     assert "-fuse-ld=lld" in env["CGO_LDFLAGS"]
 
 
+def test_file_go_proxy_exposes_lists_only_for_declared_version_metadata(tmp_path):
+    remote = load("remote_worker")
+    proxy, cache = tmp_path / "proxy", tmp_path / "cache"
+    version_dir = proxy / "example.com/tool/@v"
+    version_dir.mkdir(parents=True)
+    (version_dir / "v0.0.5.mod").write_text("module example.com/tool")
+    cached = cache / "example.com/tool/@v"
+    cached.mkdir(parents=True)
+    remote.write_json(cached / "v0.0.5.info", {"Version": "v0.0.5"})
+    remote.write_json(cached / "v9.0.0.info", {"Version": "v9.0.0"})
+    assert remote.complete_go_proxy_lists(proxy, cache) == 1
+    assert (version_dir / "list").read_text() == "v0.0.5\n"
+    assert not (version_dir / "v9.0.0.info").exists()
+
+
 def test_dependency_bundle_mirror_redirect_is_process_local(prepared):
     remote, source, request = prepared
     remote.prepare(request)

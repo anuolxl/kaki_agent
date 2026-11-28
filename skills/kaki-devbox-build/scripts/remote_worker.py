@@ -257,6 +257,30 @@ def go_cache_upload(request):
     return {"path": str(directory / (request["bundle_sha256"] + ".tar"))}
 
 
+def complete_go_proxy_lists(directory, module_cache=None):
+    # go install还会用@v/list查询弃用信息；版本只来自已声明物料/匹配的已验证缓存。
+    if module_cache:
+        for mod in directory.rglob("*.mod"):
+            info = mod.with_suffix(".info")
+            cached = module_cache / mod.relative_to(directory).with_suffix(".info")
+            if not info.exists() and cached.is_file() and not cached.is_symlink():
+                value = read_json(cached)
+                if go_escape(value.get("Version", "")) == mod.stem:
+                    shutil.copy2(str(cached), str(info))
+    versions = {}
+    for info in directory.rglob("*.info"):
+        version = read_json(info).get("Version", "")
+        if not re.match(r"^v[0-9][A-Za-z0-9.+-]*$", version) or go_escape(version) != info.stem:
+            raise ValueError("invalid proxy version metadata")
+        versions.setdefault(info.parent, set()).add(version)
+    for parent, values in versions.items():
+        target = parent / "list"
+        if target.is_symlink():
+            raise RuntimeError("proxy version list cannot be a symlink")
+        target.write_text("\n".join(sorted(values)) + "\n")
+    return len(versions)
+
+
 def prepare_go_cache(request):
     root = owned_root(request["task"])
     archive = pathlib.Path(go_cache_upload(request)["path"])
@@ -306,6 +330,7 @@ def prepare_go_cache(request):
                     shutil.copyfileobj(source, output)
                 os.chmod(temporary, 0o600)
                 os.replace(temporary, str(target))
+    complete_go_proxy_lists(destination)
     result = {
         "path": str(destination),
         "bundle_sha256": request["bundle_sha256"],
@@ -549,6 +574,8 @@ def build_plan(spec, root, jobdir):
                 raise RuntimeError("Go module proxy path changed")
             env["GOPROXY"] = proxy_path.as_uri()
             env["GONOPROXY"] = "none"
+            cache = pathlib.Path(command(["go", "env", "GOMODCACHE"], env=env)) / "cache" / "download"
+            complete_go_proxy_lists(proxy_path, cache)
         env["GIT_TERMINAL_PROMPT"] = "0"
         env["GIT_SSH_COMMAND"] = (
             "ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=2"
