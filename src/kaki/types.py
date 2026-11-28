@@ -63,6 +63,8 @@ class ToolResult:
     executed: bool = True
     denied: bool = False
     decision_id: str | None = None
+    uncertain: bool = False
+    context_refresh: bool = False
 
 
 @dataclass

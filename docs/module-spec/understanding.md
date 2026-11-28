@@ -80,3 +80,8 @@ SQLite schema3新增decisions，外键关联session/turn；取消或进程恢复
 兼容测试：test_understanding_permissions.py、test_understanding_ui.py、test_config_workspace.py；原Store/Runtime/Context/Provider/TUI/App回归继续执行。开发验收包括真实RightCode两轮TUI对话、App修复/测试/review/追问，以及SQLite证据、独立测试与界面截图。
 
 结构化测试命令若带uv run前缀，必须保留完整argv，让uv选择项目解释器与依赖；禁止去掉前缀后改用宿主python/pytest。uv包装的pwd/echo/Git不能归为只读并自动批准，当前直接拒绝。回归用临时uv runner子进程验证实际执行路径，不仅比较参数列表。
+
+
+## v0.4 开发能力补充
+
+开发工具、受信命令、Skill依赖和发现、授权与分支切换后上下文刷新，以[development模块契约](development.md)为准。 新增字段均提供向后兼容默认值，SQLite仍为schema3；旧版关于“不支持Git写操作”的限制仅适用于旧版和kaki_exec模板，不再代表kaki_git/命名profile。

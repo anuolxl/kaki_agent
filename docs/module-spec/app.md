@@ -85,3 +85,8 @@ sessions.archived 持久字段、v1备份迁移和事务语义见 [core.md](core
 tests/test_app_controller.py 覆盖业务状态/持久化；test_app_server.py 覆盖 HTTP/WS/鉴权；test_app_process.py 验证实际子进程退出和单实例；test_tui_pty.py 验证真实终端退出；tests/ui-state.test.mjs 覆盖前端状态。原生 Cocoa 运行由 macOS 手工验收，Linux CI 不声称验证原生窗口。
 
 用户级Finder/Dock启动器由scripts/install_macos_app.py生成；CFBundleShortVersionString/CFBundleVersion读取kaki.__version__，不再固定0.2，避免包升级后Finder显示旧版本。
+
+
+## v0.4 开发能力补充
+
+开发工具、受信命令、Skill依赖和发现、授权与分支切换后上下文刷新，以[development模块契约](development.md)为准。 新增字段均提供向后兼容默认值，SQLite仍为schema3；旧版关于“不支持Git写操作”的限制仅适用于旧版和kaki_exec模板，不再代表kaki_git/命名profile。

@@ -300,6 +300,30 @@ def sessions(ctx: typer.Context):
     console.print(table)
 
 
+@app.command("skills")
+def list_skills(ctx: typer.Context):
+    """List installed local Skill metadata; live prerequisite checks use kaki_capabilities."""
+    from kaki.context.knowledge import Skills
+
+    options = load_config(ctx.obj["config"], model=ctx.obj["model"])
+    workspace = Workspace.resolve(ctx.obj["cwd"], options)
+    rows, failures = Skills(workspace, options).catalog()
+    console.print_json(
+        data={
+            "workspace": str(workspace.root),
+            "installed_skills": [
+                {
+                    k: r[k]
+                    for k in ("id", "path", "description", "hash", "required_tools", "required_commands")
+                }
+                for r in rows
+            ],
+            "failures": failures,
+            "readiness": "metadata only; runtime checks use kaki_capabilities",
+        }
+    )
+
+
 def main():
     try:
         app()

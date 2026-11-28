@@ -22,6 +22,7 @@ build/
 dist/
 target/
 .idea/
+.worktrees/
 .DS_Store
 .env
 .env.*

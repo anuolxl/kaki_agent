@@ -83,6 +83,8 @@ class Runtime:
         self.tools = ToolRegistry(
             self.workspace, self.config, self.context, self.browser, self.ask_user, self.permissions
         )
+        self.context.skills.available_tools = self.tools.available_names
+        self.context.skills.available_commands = self.tools.development.available_commands
         self.tools.add(
             Tool(
                 "kaki_artifact_read",
@@ -207,6 +209,7 @@ class Runtime:
         after = None
         self.partial_text = ""
         self.permissions.begin()
+        self.tools.begin_turn()
         self.decisions.answered.clear()
 
         async def before_mutation():

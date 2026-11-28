@@ -7,6 +7,7 @@ import json
 import re
 import shlex
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import urlparse
 
 from kaki.decisions import APPROVAL_LABELS
@@ -42,6 +43,8 @@ class PreparedOperation:
     fingerprint: str
     argv: tuple[str, ...] = ()
     file_state: str | None = None
+    state_token: str | None = None
+    review: dict | None = None
 
 
 def structured_command(command):
@@ -60,6 +63,14 @@ def structured_command(command):
     if not argv or "/" in argv[0] or "\\" in argv[0]:
         raise KakiError("命令必须使用支持的可执行程序名")
     name = argv[0]
+    if name == "gofmt" and not runner:
+        if (
+            len(argv) != 3
+            or argv[1] != "-w"
+            or any(p.startswith("-") or not p.endswith(".go") for p in argv[2:])
+        ):
+            raise KakiError("格式化仅支持gofmt -w <明确.go文件>")
+        return tuple(argv), "workspace.write"
     if runner and name in {"pwd", "echo", "git"}:
         raise KakiError("uv run只用于受支持的测试入口，不作为只读命令包装器")
     if name in {"pwd", "echo"}:
@@ -100,8 +111,9 @@ def structured_command(command):
         or name == "cargo"
         and argv[1:2] == ["test"]
         or name == "make"
-        and len(argv) == 2
+        and len(argv) >= 2
         and argv[1] in {"test", "docker-test"}
+        and all(a.startswith("ARGS=") for a in argv[2:])
     )
     if test:
         if any(
@@ -155,6 +167,13 @@ class PermissionService:
             resource = str(rt.workspace.path(args.get("working_dir", ".")))
             if not rt.workspace.path(resource).is_dir():
                 raise KakiError("working_dir必须是目录")
+            if argv[0] == "gofmt":
+                hashes = {}
+                for value in argv[2:]:
+                    path = rt.workspace.path(str(Path(resource) / value), write=True)
+                    hashes[str(path)] = hashlib.sha256(path.read_bytes()).hexdigest()
+                resource = str(path)
+                file_state = hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest()
             if argv[0] == "git":
                 # Git diff obeys workspace credential exclusions, including historical versions.
                 if "--" in argv:
@@ -223,12 +242,14 @@ class PermissionService:
             "kaki_archive_read",
             "kaki_memory_search",
             "kaki_artifact_read",
+            "kaki_artifact_write",
+            "kaki_tool_search",
+            "kaki_capabilities",
+            "kaki_skill_search",
         }:
-            capability = "session.read"
+            capability = "session.write" if name == "kaki_artifact_write" else "session.read"
             if name == "kaki_skill_read":
                 # Validate the configured skill root before granting a read.
-                from pathlib import Path
-
                 path = Path(args["path"]).expanduser().resolve()
                 if not any(path.is_relative_to(root.resolve()) for root in rt.context.skills.roots):
                     raise KakiError("不在本地Skill根目录")
@@ -242,7 +263,15 @@ class PermissionService:
     def task_allows(self, operation, human):
         mode = self.runtime.config.permissions.mode
         cap = operation.capability
-        if cap in {"workspace.read", "session.read", "interaction.ask_user", "browser.observe"}:
+        if cap in {
+            "workspace.read",
+            "session.read",
+            "session.write",
+            "interaction.ask_user",
+            "browser.observe",
+            "workspace.check",
+            "external.read",
+        }:
             return True
         if mode in {"read_only", "ask"}:
             return False
@@ -263,6 +292,10 @@ class PermissionService:
                 re.search(r"记住|remember|保存.*记忆", human, re.I)
                 and not re.search(r"不.*记住|do not remember", human, re.I)
             )
+        if cap in {"git.fetch", "git.branch"}:
+            return bool(re.search(r"最新|分支|fetch|branch|switch", human, re.I))
+        if cap in {"git.stage", "git.commit"}:
+            return bool(re.search(r"提交|commit|暂存|stage|git add", human, re.I))
         return False
 
     def restriction(self, operation, human):
@@ -270,6 +303,8 @@ class PermissionService:
             return "当前用户明确限制文件写入"
         if operation.capability == "test.execute" and NO_TEST.search(human):
             return "当前用户明确禁止运行测试"
+        if operation.capability.startswith("git.") and GLOBAL_NO_WRITE.search(human):
+            return "只读任务不允许修改Git状态"
         if operation.capability == "workspace.write":
             # Conservatively honor path-specific prohibitions instead of guessing their scope.
             forbidden = re.findall(r"(?:不(?:要)?(?:修改|改动)|不要动)\s*`?([\w./-]+)", human)
@@ -297,6 +332,13 @@ class PermissionService:
             if operation.capability == "browser.interact"
             else ""
         )
+        if operation.capability not in {
+            "workspace.write",
+            "test.execute",
+            "memory.write",
+            "browser.interact",
+        }:
+            scope = operation.argv or operation.fingerprint
         key = (operation.capability, operation.resource, scope)
         if restriction:
             return ToolResult("权限拒绝：" + restriction, failed=True, executed=False, denied=True)
@@ -310,13 +352,22 @@ class PermissionService:
             "session.read",
             "interaction.ask_user",
             "browser.observe",
+            "session.write",
+            "workspace.check",
+            "external.read",
         }:
             return ToolResult("权限拒绝：read_only配置未开放此能力", failed=True, executed=False, denied=True)
         if key in self.grants or self.task_allows(operation, human):
             return None
         if rt.config.permissions.default_decision == "deny":
             return ToolResult("权限拒绝：本地配置默认拒绝", failed=True, executed=False, denied=True)
-        options = [APPROVAL_LABELS[s] for s in rt.config.permissions.grant_scopes] + [APPROVAL_LABELS["deny"]]
+        grant_scopes = [
+            s
+            for s in rt.config.permissions.grant_scopes
+            if s == "once"
+            or cap not in {"process.execute", "external.write", "git.push", "repository.mr_create"}
+        ]
+        options = [APPROVAL_LABELS[s] for s in grant_scopes] + [APPROVAL_LABELS["deny"]]
         details = {
             "workspace": str(rt.workspace.root),
             "session_id": rt.session_id,
@@ -327,6 +378,9 @@ class PermissionService:
             "argv": list(operation.argv),
             "fingerprint": operation.fingerprint,
             "file_state": operation.file_state,
+            "state_token": operation.state_token,
+            "review": operation.review,
+            "grant_scopes": grant_scopes,
             "arguments_preview": {
                 key: value[:2000] if isinstance(value, str) else value
                 for key, value in (arguments or {}).items()
@@ -335,6 +389,8 @@ class PermissionService:
         question = "需要授权后才能执行：\n" + json.dumps(details, ensure_ascii=False, indent=2)
         if cap == "test.execute":
             question += "\n测试会运行仓库代码；当前没有操作系统沙箱，脚本可能写文件或访问网络。"
+        if cap in {"process.execute", "external.write", "repository.mr_create", "git.push"}:
+            question += "\n这是代码执行或远端写操作，仅批准当前所示操作；Skill不能代替你的授权。"
         answer = await rt.decisions.request("approval", question, options, details)
         if answer["choice"] == "deny":
             self.denials.add(operation.fingerprint)

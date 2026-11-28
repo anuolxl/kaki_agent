@@ -10,7 +10,7 @@ from pathlib import Path
 
 import yaml
 
-from kaki.config import Config, kaki_home
+from kaki.config import Config, kaki_home, redact_text
 from kaki.store import Store
 from kaki.types import KakiError
 from kaki.workspace import Workspace
@@ -94,6 +94,8 @@ class Skills:
             workspace.root / ".kaki" / "skills",
             workspace.root / ".agents" / "skills",
         ]
+        self.available_tools = None
+        self.available_commands = None
 
     def catalog(self) -> tuple[list[dict], list[str]]:
         entries = {}
@@ -115,14 +117,47 @@ class Skills:
                     if not isinstance(meta, dict):
                         raise ValueError("invalid frontmatter")
                     name = str(meta.get("name") or file.parent.name)
+                    metadata = meta.get("metadata") or {}
+                    kaki = metadata.get("kaki", {}) if isinstance(metadata, dict) else {}
+                    if not isinstance(kaki, dict):
+                        raise ValueError("invalid kaki metadata")
+                    private_paths = kaki.get("private_paths", [])
+                    if not isinstance(private_paths, list) or any(
+                        not isinstance(v, str) for v in private_paths
+                    ):
+                        raise ValueError("invalid private_paths")
+                    required_tools = kaki.get("required_tools", [])
+                    required_commands = kaki.get("required_commands", [])
+                    if not isinstance(required_commands, list) or any(
+                        not isinstance(v, str) for v in required_commands
+                    ):
+                        raise ValueError("invalid required_commands")
+                    if not isinstance(required_tools, list) or any(
+                        not isinstance(v, str) for v in required_tools
+                    ):
+                        raise ValueError("invalid required_tools")
+                    available = self.available_tools() if self.available_tools else None
+                    missing = [
+                        name for name in required_tools if available is not None and name not in available
+                    ]
+                    commands = self.available_commands() if self.available_commands else None
+                    missing_commands = [
+                        n for n in required_commands if commands is not None and n not in commands
+                    ]
                     entries[name] = {
                         "id": name,
                         "path": str(real),
                         "directory": str(real.parent),
                         "description": str(meta.get("description", "")),
                         "always": bool(meta.get("always", False)),
-                        "body": body.strip(),
+                        "body": redact_text(body.strip()),
                         "hash": hashlib.sha256(raw.encode()).hexdigest(),
+                        "required_tools": required_tools,
+                        "required_commands": required_commands,
+                        "private_paths": private_paths,
+                        "ready": not missing and not missing_commands,
+                        "missing_commands": missing_commands,
+                        "missing_tools": missing,
                     }
                 except (OSError, ValueError, yaml.YAMLError) as exc:
                     failures.append(f"{file}: {type(exc).__name__}")
@@ -131,6 +166,8 @@ class Skills:
     def resolve(self, query: str, queries=None) -> tuple[str, dict]:
         rows, failures = self.catalog()
         cfg = self.config.skill_forge
+        unavailable = [r for r in rows if not r["ready"]]
+        rows = [r for r in rows if r["ready"]]
         always = [r for r in rows if r["always"]][: cfg.always_max]
         from kaki.understanding.retrieval import fused_rank
 
@@ -143,12 +180,32 @@ class Skills:
             if cfg.router.enabled
             else []
         )
-        explicit = [r for r in rows if "$" + r["id"] in query or "/skill " + r["id"] in query]
+        explicit = [
+            r for r in rows if re.search(r"(?:\$|/skill\s+)" + re.escape(r["id"]) + r"(?![\w-])", query)
+        ]
         candidates = [r for r in explicit + [rows[i] for i, _ in hits] if r not in always]
         candidates = list({r["id"]: r for r in candidates}.values())[: cfg.router.top_k]
         active = always + (candidates[: cfg.inject_max] if cfg.injection_mode == "full_body" else [])
         references = [r for r in candidates if r not in active]
-        sections = []
+        sections = (
+            [
+                "Skill catalog (metadata only; use kaki_skill_read for full instructions):\n"
+                + "\n".join(
+                    f"- {r['id']}: {r['description'][:220]} [path={r['path']}; requires={r['required_tools']}]"
+                    for r in rows[: cfg.catalog_max]
+                )
+            ]
+            if rows
+            else []
+        )
+        if unavailable:
+            sections.append(
+                "Unavailable Skills (do not pretend they can execute):\n"
+                + "\n".join(
+                    f"- {r['id']}: missing tools={r['missing_tools']}, commands={r['missing_commands']}"
+                    for r in unavailable[:20]
+                )
+            )
         for r in active:
             refs = []
             for name in re.findall(r"\[[^\]]+\]\(([^)#]+)(?:#[^)]*)?\)", r["body"]):
@@ -172,6 +229,15 @@ class Skills:
             "referenced_skill_ids": [r["id"] for r in references],
             "skill_source_failures": failures,
             "skill_versions": {r["id"]: r["hash"] for r in active},
+            "skill_required_tools": {r["id"]: r["required_tools"] for r in active},
+            "unavailable_skills": [
+                {
+                    "id": r["id"],
+                    "missing_tools": r["missing_tools"],
+                    "missing_commands": r["missing_commands"],
+                }
+                for r in unavailable
+            ],
         }
 
     def read(self, path: str) -> str:
@@ -180,13 +246,20 @@ class Skills:
             raise KakiError("不在本地Skill根目录")
         if not p.is_file():
             raise KakiError("Skill引用文件不存在")
+        rows, _ = self.catalog()
+        for row in rows:
+            directory = Path(row["directory"])
+            if p.is_relative_to(directory) and p.relative_to(directory).as_posix() in row.get(
+                "private_paths", []
+            ):
+                raise KakiError("此实现含受保护配置，不送入模型；通过已注册命令profile执行")
         if any(
             part.lower().startswith((".env", "credentials", "secrets"))
             or part.lower().endswith((".pem", ".key", ".p12"))
             for part in p.parts
         ):
             raise KakiError("Skill读取同样禁止凭据文件")
-        return p.read_text()
+        return redact_text(p.read_text())
 
 
 class Rules:

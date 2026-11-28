@@ -28,6 +28,8 @@ class AgentLoop:
         window = await rt.context.assemble(
             session, history, user, definitions, recovery=recovery, request=request
         )
+        for required in window.metadata.get("skill_required_tools", {}).values():
+            rt.tools.activate(required)
         await rt.emit(
             "context.assembled", turn, window.metadata | {"estimated_tokens": window.estimated_tokens}
         )
@@ -54,6 +56,7 @@ class AgentLoop:
         }
         draft_last = 0.0
         draft_text = ""
+        refresh_context = False
 
         async def on_delta(text, call_id):
             nonlocal draft_last, draft_text
@@ -123,7 +126,7 @@ class AgentLoop:
                     )
 
                 async def completed(call, result):
-                    nonlocal failures, tool_count
+                    nonlocal failures, tool_count, refresh_context
                     # Persist each completed observation immediately, even if another safe read is still running.
                     observation = await rt.store.run(
                         "commit_tool", session, turn, by_call[call.id]["id"], result
@@ -131,6 +134,7 @@ class AgentLoop:
                     observations[call.id] = observation
                     tool_count += 1
                     failures += int(result.failed)
+                    refresh_context = refresh_context or result.context_refresh
                     if (
                         result.executed
                         and call.name == "kaki_exec"
@@ -141,7 +145,9 @@ class AgentLoop:
                             "cwd": call.arguments.get("working_dir", str(rt.workspace.root)),
                             "exit_code": result.exit_code,
                             "executed": result.executed,
-                            "state": "denied"
+                            "state": "unknown"
+                            if result.uncertain
+                            else "denied"
                             if result.denied
                             else "failed"
                             if result.failed
@@ -163,6 +169,14 @@ class AgentLoop:
                             "preview": result.text[:600],
                             "artifacts": result.artifacts,
                             "exit_code": result.exit_code,
+                            "executed": result.executed,
+                            "state": "unknown"
+                            if result.uncertain
+                            else "denied"
+                            if result.denied
+                            else "failed"
+                            if result.failed
+                            else "succeeded",
                         },
                     )
 
@@ -196,6 +210,18 @@ class AgentLoop:
                         )
                         hard_count = 0
                         hard_nudges += 1
+                if refresh_context:
+                    if request:
+                        request.rewrite.queries["code"] = [request.original_text]
+                    system, metadata = await rt.context.prefix(user, recovery, request)
+                    window.messages[0] = system
+                    window.metadata.update(metadata, workspace_context_refreshed=True)
+                    refresh_context = False
+                    await rt.emit(
+                        "context.compacted",
+                        turn,
+                        {"reason": "git_branch_changed", "text": "分支变化后已重新读取仓库规则与Skill"},
+                    )
                 previous_tools = True
                 continue
             if response.finish_reason != "completed":
