@@ -49,3 +49,7 @@ BPT安装后的rapidjson:1.1.0还声明middleware/sonic-cpp@1.1.0。固定镜像
 Media私有Go模块下载停滞时，devbox-go-cache --task <task>仅在Mac下载/读取go.mod/go.sum和replace声明的模块物料，含CI指定init-patcher@v0.0.5；比较远端缓存缺项后传mod/info/zip归档，校验SHA和路径并准备专属file GOPROXY。不会在Mac编译业务，不传凭据，不改全局Go配置。build只覆盖本次环境GONOPROXY=none，Go原有go.sum校验保留。缺失模块版本明确报错，不任意扩大目录或修改正式依赖。
 
 devbox-cancel --task <task> --job <job>仅对经PID/父子关系/进程组核验的本任务发取消信号，未知或复用PID拒绝；新worker终态为cancelled，旧worker可能记录failed/-15。取消后查原job直到终态，再使用新的job ID，源码和产物保留。
+
+Media native构建还需要build.sh声明的ONNX与白板SDK。用devbox-build --repo media --mode media-deps --task <task> --job media-deps-<sha8> --sdk-commit <SDK完整SHA>先准备：仅从go.mod锁定的byteview-silero-vad提取其onnxruntime.tar.gz、执行锁定白板模块自带下载器，输出到本job私有目录并记录SHA；不运行会改netrc/共享库的整个build.sh。media-build必须核对NativeDependencyManifest，使用对应头文件/库；构建后通过配套loader --list验证实际解析到同一SDK库SHA。
+
+分层验证：media-build为CGO=1的Linux原生编译及ELF依赖解析；media-test遵循README/Makefile/CI的CGO=0 Stub单元测试，不混称原生Go测试。C++ SDK自身的68项callback/EventBus原生测试另外执行。此流程不启动服务或模拟真实RTC会议。

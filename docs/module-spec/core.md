@@ -113,3 +113,5 @@ Message新增派生字段native_token_reserve=None，不写入canonical payload�
 快照每次capture重建Kaki自身shadow Git index，再按当前排除规则add；旧版本已进入shadow索引的.worktrees Gitlink不会因新ignore规则而残留。只作用于state/checkpoints影子仓，用户Git index/HEAD/已有工作树文件不变；test_capture_rebuilds_shadow_index_after_new_nested_repo_exclusion验证升级场景。
 
 verification.status按cwd+规范argv分别取各测试套件最近结果，再聚合；任一套件仍失败/unknown则为failed，不能用最后一个不同的成功测试覆盖。相同命令修复后重跑成功可以消除它之前的失败。commands保留所有真实历史，不删失败证据。两条实际子进程回归分别验证“另一套件通过仍保留失败”和“修复原套件并重跑后通过”。
+
+Devbox新增media-deps模式与NativeDependencyManifest，按锁定Go模块准备ONNX/WB运行库；media-build核对库hash并保存runtime_dependencies/runtime_sdk，media-test按仓库契约使用CGO=0。详细字段与向后兼容见devbox.md；SQLite schema不变。

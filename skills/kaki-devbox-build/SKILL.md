@@ -39,3 +39,5 @@ worker与child进程组后只终止该job。确认旧任务终态后再用新job
 操作参数与恢复规则见[编译工作流](references/workflow.md)，需要准备、启动或
 恢复远端任务时读取。先SDK构建/测试，再Media联动；主Agent、模型凭据和SQLite
 仍在本机，Devbox只接收已提交源码、编译命令及状态数据。
+
+Media原生构建前，先用devbox-build的media-deps模式按仓库build.sh锁定模块准备ONNX/WB依赖；SDK原生测试、Media CGO=1编译/ELF解析与Makefile CGO=0单测分开报告，不把Stub测试当生产原生运行。

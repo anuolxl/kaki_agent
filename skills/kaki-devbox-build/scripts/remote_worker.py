@@ -396,8 +396,78 @@ def dependency_environment(root, env):
     env["GIT_CONFIG_PARAMETERS"] = " ".join(parameters).strip()
 
 
+def extract_native_archive(archive, output):
+    # 运行库允许内部相对symlink，拒绝逃出私有目录的链接和设备文件。
+    with tarfile.open(str(archive), "r:gz") as tar:
+        for member in tar.getmembers():
+            if (
+                member.name.startswith("/")
+                or ".." in pathlib.PurePosixPath(member.name).parts
+                or member.islnk()
+            ):
+                raise ValueError("unsafe native archive member")
+            if member.issym() and (
+                member.linkname.startswith("/") or ".." in pathlib.PurePosixPath(member.linkname).parts
+            ):
+                raise ValueError("unsafe native archive symlink")
+            if not (member.isfile() or member.isdir() or member.issym()):
+                raise ValueError("unsupported native archive type")
+        tar.extractall(str(output))
+
+
+def prepare_native_dependencies(jobfile):
+    # 复用build.sh锁定的模块物料和下载器，只写本job目录，不运行全局安装步骤。
+    jobfile = pathlib.Path(jobfile)
+    spec = read_json(jobfile)
+    root = root_for(spec["task"])
+    record = read_json(root / "source-media.json")
+    checkout, _, env, _, linked = build_plan(spec, root, jobfile.parent)
+    output = jobfile.parent / "native-libs"
+    output.mkdir(mode=0o700, exist_ok=True)
+
+    def module_info(name):
+        value = json.loads(command(["go", "list", "-m", "-json", name], checkout, env=env))
+        if not value.get("Dir"):
+            value = json.loads(
+                command(["go", "mod", "download", "-json", name + "@" + value["Version"]], checkout, env=env)
+            )
+        return value
+
+    print("Preparing Media ONNX/whiteboard dependencies in the private job directory", flush=True)
+    silero = module_info("code.byted.org/larkvc/byteview-silero-vad")
+    archive = pathlib.Path(silero["Dir"]) / "onnxruntime" / "onnxruntime.tar.gz"
+    if os.uname().machine != "x86_64":
+        raise RuntimeError("this native validation runner currently supports x86_64 only")
+    extract_native_archive(archive, output)
+    wb = module_info("code.byted.org/larkvc/byteview-mp-wb")
+    script = pathlib.Path(wb["Dir"]) / "script" / "download_wb_sdk.sh"
+    env.pop("SCM_VERSION", None)
+    env.pop("SCM_REPO", None)
+    print(command(["bash", str(script), "x86_64", str(output)], checkout, timeout=300, env=env), flush=True)
+    libraries = [output / "libonnxruntime.so", output / "libwb.so"]
+    for library in libraries:
+        if not library.is_file():
+            raise RuntimeError("native dependency library missing: " + str(library))
+    manifest = {
+        "schema": 1,
+        "path": str(output),
+        "media_commit": record["source_commit"],
+        "sdk_commit": linked["source_commit"],
+        "created": now(),
+        "silero": {
+            "module": silero["Path"],
+            "version": silero["Version"],
+            "archive_sha256": sha_file(archive),
+        },
+        "whiteboard": {"module": wb["Path"], "version": wb["Version"], "script_sha256": sha_file(script)},
+        "libraries": [{"path": str(p), "sha256": sha_file(p), "size": p.stat().st_size} for p in libraries],
+    }
+    write_json(root / "native-dependencies.json", manifest)
+    print(json.dumps(manifest))
+
+
 def sdk_runtime_runner(jobdir, artifact_root, libdirs):
-    # 新SDK含glibc；仅测试二进制用配套loader，不能污染Go/Git/编译器进程。
+    # 新SDK含glibc；仅验证二进制用配套loader，不能污染Go/Git/编译器进程。
     loader = artifact_root / "ld-linux-x86-64.so.2"
     if not loader.is_file():
         raise RuntimeError("SDK runtime loader is missing")
@@ -413,12 +483,30 @@ def sdk_runtime_runner(jobdir, artifact_root, libdirs):
     return runner
 
 
+def media_cgo_toolchain(env, directory=None):
+    # 与已构建SDK使用相同的Clang16/GCC13/Bullseye sysroot，不能混用宿主旧GCC ABI。
+    directory = directory or pathlib.Path("/opt/tiger/cpp_tools/x86_64_x86_64_clang_1606")
+    cc, cxx, config = directory / "bin" / "clang", directory / "bin" / "clang++", directory / "env.sh"
+    if not cc.is_file() or not cxx.is_file() or not config.is_file():
+        raise RuntimeError("SDK-compatible Clang16 toolchain is unavailable")
+    env["CC"], env["CXX"] = str(cc), str(cxx)
+    # 厂商clang包装器已经指定匹配的gcc-toolchain/sysroot；LLD和C++运行库仅用于链接。
+    env["CGO_LDFLAGS"] = env.get("CGO_LDFLAGS", "") + " -fuse-ld=lld -lstdc++ -lm"
+    return {
+        "root": str(directory),
+        "cc": str(cc),
+        "cxx": str(cxx),
+        "env_sha256": sha_file(config),
+        "version": command([str(cc), "--version"], timeout=15),
+    }
+
+
 def build_plan(spec, root, jobdir):
     # 固定repo/mode映射到真实命令；Media用临时modfile链接本次SDK，正式依赖保持。
     repo, mode = spec["repo"], spec["mode"]
     if (
         repo not in REPOS
-        or mode not in {"sdk-build", "sdk-test", "media-build", "media-test"}
+        or mode not in {"sdk-build", "sdk-test", "media-deps", "media-build", "media-test"}
         or not mode.startswith(repo + "-")
     ):
         raise ValueError("repo/mode mismatch")
@@ -493,8 +581,23 @@ def build_plan(spec, root, jobdir):
         )
         env["GOFLAGS"] = "-mod=mod -modfile=" + str(modfile)
         env["GOWORK"] = "off"
-        env["CGO_ENABLED"] = "1"
+        # Makefile/CI规定Go单测使用Stub，SDK原生回调由其测试单独验证。
+        env["CGO_ENABLED"] = "0" if mode == "media-test" else "1"
         libdirs = [str(library.parent), "/opt/tiger/byteview/rtc/worker/lib"]
+        native = None
+        native_record = root / "native-dependencies.json"
+        if native_record.is_file():
+            native = read_json(native_record)
+            if (
+                native["media_commit"] != record["source_commit"]
+                or native["sdk_commit"] != sdk_record["source_commit"]
+            ):
+                raise RuntimeError("native dependency source commits differ")
+            if any(sha_file(pathlib.Path(p["path"])) != p["sha256"] for p in native["libraries"]):
+                raise RuntimeError("native dependency library checksum changed")
+            libdirs.insert(1, native["path"])
+        if mode == "media-build" and native is None:
+            raise RuntimeError("native Media prerequisites missing: run media-deps before media-build")
         # 运行库路径只交给运行器；SDK的libc进入LD_LIBRARY_PATH会让宿主Git崩溃。
         env["CGO_LDFLAGS"] = (
             "-L"
@@ -504,25 +607,35 @@ def build_plan(spec, root, jobdir):
             + " "
             + env.get("CGO_LDFLAGS", "")
         )
+        if native:
+            env["CGO_LDFLAGS"] += (
+                " -L" + native["path"] + " -Wl,-rpath-link," + native["path"] + " -ljemalloc"
+            )
         includes = [artifact_root / "include", pathlib.Path("/opt/tiger/byteview/rtc/worker/lib/include")]
+        if native:
+            includes.extend(
+                [
+                    pathlib.Path(native["path"]) / "include",
+                    pathlib.Path(native["path"]) / "include" / "onnxruntime",
+                ]
+            )
         env["CGO_CFLAGS"] = " ".join("-I" + str(p) for p in includes) + " " + env.get("CGO_CFLAGS", "")
         env["CGO_CXXFLAGS"] = env["CGO_CFLAGS"] + " " + env.get("CGO_CXXFLAGS", "")
-        argv = (
-            [
-                "make",
-                "test",
-                "ARGS=./business_module/... -count=1 -exec="
-                + str(sdk_runtime_runner(jobdir, artifact_root, libdirs)),
-            ]
-            if mode == "media-test"
-            else ["go", "build", "-o", str(jobdir / "byteview_mp_media_platform"), "."]
-        )
+        if mode == "media-test":
+            argv = ["make", "test", "ARGS=./business_module/... -count=1"]
+        elif mode == "media-deps":
+            argv = [sys.executable, str(pathlib.Path(__file__)), "--native-deps", str(jobdir / "status.json")]
+        else:
+            argv = ["go", "build", "-o", str(jobdir / "byteview_mp_media_platform"), "."]
         linked = {
             "source_commit": sdk_record["source_commit"],
             "library": str(library),
             "sha256": sha_file(library),
             "modfile": str(modfile),
+            "runtime_libraries": libdirs,
         }
+        if mode == "media-build":
+            linked["cgo_toolchain"] = media_cgo_toolchain(env)
     return checkout, argv, env, version, linked
 
 
@@ -648,7 +761,28 @@ def worker(jobfile):
             command(
                 [str(patcher), "--set-interpreter", str(library_root / "ld-linux-x86-64.so.2"), str(binary)]
             )
-            command([str(patcher), "--set-rpath", str(library_root), str(binary)])
+            command(
+                [
+                    str(patcher),
+                    "--force-rpath",
+                    "--set-rpath",
+                    os.pathsep.join(linked["runtime_libraries"]),
+                    str(binary),
+                ]
+            )
+            runner = sdk_runtime_runner(jobfile.parent, library_root, linked["runtime_libraries"])
+            data["runtime_dependencies"] = command([str(runner), "--list", str(binary)])
+            sdk_line = next(
+                (line for line in data["runtime_dependencies"].splitlines() if "libcpp_sdk.so =>" in line), ""
+            )
+            actual_sdk = pathlib.Path(sdk_line.split("=>", 1)[1].strip().split()[0]) if sdk_line else None
+            if (
+                actual_sdk is None
+                or actual_sdk.resolve() != pathlib.Path(linked["library"]).resolve()
+                or sha_file(actual_sdk) != linked["sha256"]
+            ):
+                raise RuntimeError("native binary did not resolve the verified SDK artifact")
+            data["runtime_sdk"] = {"path": str(actual_sdk), "sha256": sha_file(actual_sdk)}
             data["artifacts"] = [
                 {"path": str(binary), "sha256": sha_file(binary), "size": binary.stat().st_size}
             ]
@@ -801,3 +935,6 @@ def dispatch(request, runner):
 
 if __name__ == "__main__" and sys.argv[1:2] == ["--worker"]:
     worker(sys.argv[2])
+
+elif __name__ == "__main__" and sys.argv[1:2] == ["--native-deps"]:
+    prepare_native_dependencies(sys.argv[2])

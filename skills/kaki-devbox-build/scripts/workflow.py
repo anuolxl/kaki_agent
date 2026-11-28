@@ -42,7 +42,7 @@ def parser():
     p.add_argument("--branch")
     p.add_argument("--commit")
     p.add_argument("--task", required=True)
-    p.add_argument("--mode", choices=["sdk-build", "sdk-test", "media-build", "media-test"])
+    p.add_argument("--mode", choices=["sdk-build", "sdk-test", "media-deps", "media-build", "media-test"])
     p.add_argument("--job")
     p.add_argument("--sdk-commit")
     p.add_argument("--wait", type=int, default=0)

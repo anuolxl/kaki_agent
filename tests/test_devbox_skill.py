@@ -247,6 +247,50 @@ def test_sdk_runtime_runner_preserves_arguments_without_polluting_host_tools(tmp
     ]
 
 
+def test_native_archive_keeps_relative_library_link_and_rejects_escape(tmp_path):
+    import io
+    import tarfile
+
+    remote = load("remote_worker")
+    archive = tmp_path / "native.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        file = tarfile.TarInfo("libnative.so.1")
+        file.size = 3
+        tar.addfile(file, io.BytesIO(b"lib"))
+        link = tarfile.TarInfo("libnative.so")
+        link.type, link.linkname = tarfile.SYMTYPE, "libnative.so.1"
+        tar.addfile(link)
+    output = tmp_path / "runtime"
+    output.mkdir()
+    remote.extract_native_archive(archive, output)
+    assert (output / "libnative.so").read_bytes() == b"lib"
+    bad = tmp_path / "bad.tar.gz"
+    with tarfile.open(bad, "w:gz") as tar:
+        link = tarfile.TarInfo("include")
+        link.type, link.linkname = tarfile.SYMTYPE, "../../user-directory"
+        tar.addfile(link)
+    with pytest.raises(ValueError, match="unsafe"):
+        remote.extract_native_archive(bad, output)
+
+
+def test_media_uses_sdk_toolchain_without_global_runtime_environment(tmp_path):
+    remote = load("remote_worker")
+    directory = tmp_path / "toolchain"
+    (directory / "bin").mkdir(parents=True)
+    for name in ["clang", "clang++"]:
+        executable = directory / "bin" / name
+        executable.write_text('#!/bin/sh\necho "clang version 16.0.6"\n')
+        executable.chmod(0o700)
+    (directory / "env.sh").write_text("# matching sysroot contract")
+    env = {"CGO_LDFLAGS": "-Lverified-sdk", "LD_LIBRARY_PATH": "/host-libraries"}
+    result = remote.media_cgo_toolchain(env, directory)
+    assert env["CC"] == str(directory / "bin/clang")
+    assert env["CXX"] == str(directory / "bin/clang++")
+    assert env["LD_LIBRARY_PATH"] == "/host-libraries"
+    assert "clang version 16.0.6" in result["version"]
+    assert "-fuse-ld=lld" in env["CGO_LDFLAGS"]
+
+
 def test_dependency_bundle_mirror_redirect_is_process_local(prepared):
     remote, source, request = prepared
     remote.prepare(request)
