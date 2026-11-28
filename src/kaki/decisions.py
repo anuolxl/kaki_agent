@@ -75,7 +75,7 @@ class DecisionService:
             raise KakiError("回答不能为空或过长")
         value = {"text": text}
         if q["kind"] == "approval":
-            allowed = [s for s in rt.config.permissions.grant_scopes] + ["deny"]
+            allowed = q["operation"].get("grant_scopes", rt.config.permissions.grant_scopes) + ["deny"]
             selected = choice or next(
                 (key for key, label in APPROVAL_LABELS.items() if text.strip() in (key, label)), None
             )

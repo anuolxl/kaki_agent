@@ -9,12 +9,14 @@ import os
 import signal
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from jsonschema import Draft202012Validator
 
-from kaki.config import Config, safe_error
+from kaki.config import Config, redact_text, safe_error
+from kaki.development import DevelopmentTools, digest
+from kaki.execution import ExecutionTimeout
 from kaki.types import InteractionRequired, KakiError, ToolCall, ToolResult
 from kaki.workspace import Workspace
 
@@ -31,6 +33,9 @@ class Tool:
     execute: Callable[[dict, dict], Awaitable[ToolResult]]
     safe_read: bool = False
     schema: dict | None = None
+    category: str = "core"
+    deferred: bool = False
+    preflight: Callable | None = None
 
     def parameters(self):
         return self.schema or {
@@ -69,11 +74,136 @@ class ToolRegistry:
         )
         self.tools = {}
         self.permissions = permissions
+        self.development = DevelopmentTools(permissions.runtime) if permissions else None
+        self.selected_tools = set()
         self._builtins()
+        self._development_tools()
 
     def add(self, tool: Tool):
         if tool.name not in self.config.tools.disabled_tools:
             self.tools[tool.name] = tool
+
+    def _development_tools(self):
+        self.add(
+            Tool(
+                "kaki_capabilities",
+                "Inspect actual tools, command profiles and local Skills. Includes prerequisites; user consent cannot install a missing tool.",
+                {},
+                [],
+                "READ",
+                self.capabilities,
+                True,
+            )
+        )
+        self.add(
+            Tool(
+                "kaki_tool_search",
+                "Discover and load relevant tools or command profiles by task query. 查找Git分支、MR、测试平台、浏览器等能力；返回的schema不授予权限。",
+                {"query": string(), "limit": integer("results", 1, 10)},
+                ["query"],
+                "READ",
+                self.tool_search,
+                True,
+            )
+        )
+        self.add(
+            Tool(
+                "kaki_artifact_write",
+                "Save bounded text/JSON as an immutable project artifact outside the Git worktree; use its path for workflow input or MR material.",
+                {"text": string(), "format": {"type": "string", "enum": ["text", "json", "markdown"]}},
+                ["text"],
+                "READ",
+                self.artifact_write,
+            )
+        )
+        self.add(
+            Tool(
+                "kaki_skill_search",
+                "Search installed local Skills by task; return exact names, source paths, prerequisites and readiness. 先检索合适Skill，再skill_read读取正文和必要reference，不自动执行。",
+                {"query": string(), "limit": integer("results", 1, 10)},
+                ["query"],
+                "READ",
+                self.skill_search,
+                True,
+            )
+        )
+        if not self.development:
+            return
+        if self.config.tools.commands:
+            self.add(
+                Tool(
+                    "kaki_command",
+                    "Execute a named, user-configured command profile with integrity checks. 用于freshness doctor、开发检查和测试平台脚本；先查看capabilities，不接受任意bash字符串。",
+                    {"name": string(), "arguments": {"type": "array", "items": string(), "maxItems": 80}},
+                    ["name"],
+                    "EXECUTE",
+                    self.development.run_command,
+                    category="development",
+                    preflight=self.development.prepare_command,
+                )
+            )
+        if self.config.tools.development.enabled:
+            self.add(
+                Tool(
+                    "kaki_git",
+                    "Typed local Git development: status/diff/log/fetch/create_branch/switch/stage/commit/push. 更新release基线、新建开发分支、精确暂存和提交。No reset/clean/force/protected-branch writes. stage/commit require exact paths; create_branch requires base and branch. Fetch uses ref=release/... .",
+                    {
+                        "action": {
+                            "type": "string",
+                            "enum": [
+                                "status",
+                                "diff",
+                                "log",
+                                "fetch",
+                                "create_branch",
+                                "switch",
+                                "stage",
+                                "commit",
+                                "push",
+                            ],
+                        },
+                        "remote": string(),
+                        "ref": string(),
+                        "base": string(),
+                        "branch": string(),
+                        "paths": {"type": "array", "items": string(), "minItems": 1, "maxItems": 100},
+                        "message": string(),
+                        "staged": {"type": "boolean"},
+                    },
+                    ["action"],
+                    "EXECUTE",
+                    self.development.git,
+                    category="development",
+                    preflight=self.development.prepare_git,
+                )
+            )
+            self.add(
+                Tool(
+                    "kaki_mr",
+                    "Prepare a reviewable MR draft artifact, find an existing MR, or create an approved draft MR. 支持GitHub/Codebase，先准备MR，远端创建需单次授权；不合并、不部署。",
+                    {
+                        "action": {"type": "string", "enum": ["prepare", "find", "create_draft"]},
+                        "base": string(),
+                        "title": string(),
+                        "body": string(),
+                    },
+                    ["action", "base"],
+                    "EXTERNAL",
+                    self.development.mr,
+                    category="repository",
+                    deferred=True,
+                    preflight=self.development.prepare_mr,
+                )
+            )
+
+    def begin_turn(self):
+        self.selected_tools.clear()
+
+    def activate(self, names):
+        self.selected_tools.update(name for name in names if name in self.tools)
+
+    def available_names(self):
+        return set(self.tools) - self.excluded()
 
     def _builtins(self):
         definitions = [
@@ -137,7 +267,7 @@ class ToolRegistry:
             ),
             Tool(
                 "kaki_exec",
-                "Run one supported argv command without a shell: pwd/echo, git status/diff/ls-files, pytest/python -m unittest/go test/node --test/npm test/cargo test/make test. No pipes, redirects, scripts or arbitrary commands. Test execution requires user task authorization or approval.",
+                "Run structured commands: pwd/echo, read-only git, test runners, make test ARGS=..., or gofmt -w <one.go>. For Git writes use kaki_git; for bash/workflow scripts use configured kaki_command profiles. No arbitrary shell string/pipes/redirects.",
                 {"command": string(), "working_dir": string(), "timeout": integer("seconds", 1, 600)},
                 ["command"],
                 "EXECUTE",
@@ -209,15 +339,45 @@ class ToolRegistry:
             async def call(args, ctx, n=name):
                 return await self.browser.call(n, args)
 
-            self.add(Tool(name, t["description"], {}, [], "EXTERNAL", call, schema=t["parameters"]))
+            self.add(
+                Tool(
+                    name,
+                    t["description"],
+                    {},
+                    [],
+                    "EXTERNAL",
+                    call,
+                    schema=t["parameters"],
+                    category="browser",
+                    deferred=True,
+                )
+            )
 
     def definitions(self):
+        excluded = self.excluded()
+        return [
+            t.definition()
+            for t in self.tools.values()
+            if t.name not in excluded
+            and (not self.config.tools.discovery.enabled or not t.deferred or t.name in self.selected_tools)
+        ]
+
+    def excluded(self):
         from kaki.permissions import BLOCKED_BROWSER_TOOLS
 
         excluded = {"kaki_browser_" + suffix for suffix in BLOCKED_BROWSER_TOOLS}
         if self.config.permissions.mode == "read_only":
             excluded |= {"kaki_write_file", "kaki_edit_file", "kaki_remember"}
-        return [t.definition() for t in self.tools.values() if t.name not in excluded]
+        return excluded
+
+    async def operation(self, tool, call, args, ctx):
+        operation = (
+            await tool.preflight(args, ctx) if tool.preflight else self.permissions.prepare(call, args)
+        )
+        if operation.capability == "workspace.write" and self.config.tools.development.enabled:
+            state = await self.development.writable_state()
+            operation = replace(operation, state_token=digest(state))
+        return operation
 
     async def prepare(self, call, ctx):
         tool = self.tools.get(call.name)
@@ -249,7 +409,7 @@ class ToolRegistry:
                 )
             if call.name == "kaki_ask_user" and not self.permissions.runtime.interactive:
                 raise InteractionRequired("clarification", args["question"])
-            operation = self.permissions.prepare(call, args)
+            operation = await self.operation(tool, call, args, ctx)
             answer = await self.permissions.authorize(operation, ctx, args)
             if isinstance(answer, ToolResult):
                 return None, None, answer
@@ -276,13 +436,13 @@ class ToolRegistry:
         entered = False
         try:
             # INVARIANT: recheck canonical targets after human approval and before actual I/O.
-            if self.permissions.prepare(call, args) != operation:
+            if await self.operation(tool, call, args, ctx) != operation:
                 return ToolResult(
                     "授权后操作目标已改变，请重新读取", failed=True, denied=True, executed=False
                 )
             if operation.capability in {"workspace.write", "test.execute"} and ctx.get("before_mutation"):
                 await ctx["before_mutation"]()
-            if self.permissions.prepare(call, args) != operation:
+            if await self.operation(tool, call, args, ctx) != operation:
                 return ToolResult("快照期间目标已改变，未执行", failed=True, denied=True, executed=False)
             if on_start:
                 await on_start(call)
@@ -291,9 +451,17 @@ class ToolRegistry:
                 result = await tool.execute(args, ctx)
             else:
                 timeout = (
-                    (args.get("timeout") or self.config.tools.exec.timeout) + 10
-                    if tool.effect == "EXECUTE"
-                    else 120
+                    self.config.tools.commands[args["name"]].timeout + 10
+                    if call.name == "kaki_command"
+                    else 240
+                    if call.name == "kaki_mr"
+                    else 190
+                    if call.name == "kaki_git"
+                    else (
+                        (args.get("timeout") or self.config.tools.exec.timeout) + 10
+                        if tool.effect == "EXECUTE"
+                        else 120
+                    )
                 )
                 result = await asyncio.wait_for(
                     tool.execute(args, {**ctx, "prepared_operation": operation}), timeout
@@ -304,6 +472,15 @@ class ToolRegistry:
             raise
         except InteractionRequired:
             raise
+        except ExecutionTimeout as exc:
+            return ToolResult(
+                safe_error(exc),
+                failed=True,
+                executed=entered,
+                uncertain=entered
+                and operation.capability
+                not in {"workspace.read", "session.read", "external.read", "workspace.check"},
+            )
         except Exception as exc:
             return ToolResult(
                 "工具失败：" + safe_error(exc) + "\n请分析真实错误并更换方法，不要重复无效调用。",
@@ -313,6 +490,7 @@ class ToolRegistry:
             )
 
     def bound(self, result: ToolResult, name: str) -> ToolResult:
+        result.text = redact_text(result.text)
         if count_text(result.text) > 4000:
             artifact = self.workspace.artifact(result.text.encode(), suffix=".txt")
             result.artifacts.append(artifact)
@@ -350,8 +528,19 @@ class ToolRegistry:
                     results.extend(task.result() for task in tasks)
                 i = end
             else:
-                results.append(await one(calls[i], await self.prepare(calls[i], ctx)))
+                result = await one(calls[i], await self.prepare(calls[i], ctx))
+                results.append(result)
                 i += 1
+                if result.context_refresh:
+                    for call in calls[i:]:
+                        skipped = ToolResult(
+                            "分支已变化；需要刷新规则后重新提出工具调用，本项未执行",
+                            failed=True,
+                            executed=False,
+                        )
+                        await on_complete(call, skipped)
+                        results.append(skipped)
+                    break
         return results
 
     async def read(self, a, ctx):
@@ -593,7 +782,107 @@ class ToolRegistry:
         return ToolResult(answer)
 
     async def skill_read(self, a, ctx):
+        rows, _ = await asyncio.to_thread(self.context.skills.catalog)
+        for row in rows:
+            if Path(a["path"]).expanduser().resolve().is_relative_to(Path(row["directory"])):
+                self.activate(row.get("required_tools", []))
         return ToolResult(await asyncio.to_thread(self.context.skills.read, a["path"]))
+
+    async def capabilities(self, a, ctx):
+        visible = {row["name"] for row in self.definitions()}
+        rows, failures = await asyncio.to_thread(self.context.skills.catalog)
+        commands = await asyncio.to_thread(self.development.command_catalog) if self.development else []
+        return ToolResult(
+            json.dumps(
+                {
+                    "tools": [
+                        {
+                            "name": t.name,
+                            "description": t.description[:500],
+                            "category": t.category,
+                            "visible": t.name in visible,
+                            "deferred": t.deferred,
+                        }
+                        for t in self.tools.values()
+                        if t.name in self.available_names()
+                    ],
+                    "commands": commands,
+                    "skills": [
+                        {
+                            "id": r["id"],
+                            "ready": r["ready"],
+                            "missing_tools": r["missing_tools"],
+                            "missing_commands": r["missing_commands"],
+                        }
+                        for r in rows
+                    ],
+                    "skill_failures": failures,
+                    "development": self.config.tools.development.model_dump(),
+                    "note": "注册/发现不等于授权；认证以实际CLI结果为准。",
+                },
+                ensure_ascii=False,
+            )
+        )
+
+    async def tool_search(self, a, ctx):
+        from kaki.understanding.retrieval import fused_rank
+
+        entries = [
+            {"name": t.name, "description": t.description, "tool": t.name}
+            for t in self.tools.values()
+            if t.name in self.available_names()
+        ]
+        entries += [
+            {
+                "name": name,
+                "description": c.description,
+                "tool": "kaki_command",
+                "profile": name,
+                "capability": c.capability,
+                "allowed_flags": c.allowed_flags,
+                "path_flags": c.path_flags,
+                "write_flags": c.write_flags,
+            }
+            for name, c in self.config.tools.commands.items()
+        ]
+        query = a["query"]
+        ranked = fused_rank([query], [e["name"] + " " + e["description"] for e in entries])
+        explicit = [i for i, e in enumerate(entries) if e["name"] == query]
+        indices = list(dict.fromkeys([*explicit, *(i for i, _ in ranked)]))[
+            : min(
+                a.get("limit", self.config.tools.discovery.max_results),
+                self.config.tools.discovery.max_results,
+            )
+        ]
+        hits = [entries[i] for i in indices]
+        self.activate([e["tool"] for e in hits])
+        return ToolResult(
+            json.dumps(
+                {
+                    "matches": hits,
+                    "loaded_definitions": [
+                        self.tools[name].definition()
+                        for name in dict.fromkeys(e["tool"] for e in hits)
+                        if name in self.tools
+                    ],
+                },
+                ensure_ascii=False,
+            )
+        )
+
+    async def artifact_write(self, a, ctx):
+        if redact_text(a["text"]) != a["text"]:
+            raise KakiError("输入产物包含凭据样式，不保存或转交模型/外部平台")
+        raw = a["text"].encode()
+        if len(raw) > 2 * 1024 * 1024:
+            raise KakiError("单个输入产物超过2 MiB")
+        fmt = a.get("format", "text")
+        if fmt == "json":
+            json.loads(a["text"])
+        artifact = self.workspace.artifact(
+            raw, suffix={"json": ".json", "markdown": ".md", "text": ".txt"}[fmt]
+        )
+        return ToolResult(json.dumps(artifact, ensure_ascii=False), artifacts=[artifact])
 
     async def memory_search(self, a, ctx):
         return ToolResult(json.dumps(await self.context.memory.recall(a["query"]), ensure_ascii=False))
@@ -644,6 +933,39 @@ class ToolRegistry:
                     "text": text[offset : offset + limit],
                     "offset": offset,
                     "next_offset": offset + limit if offset + limit < len(text) else None,
+                },
+                ensure_ascii=False,
+            )
+        )
+
+    async def skill_search(self, a, ctx):
+        from kaki.understanding.retrieval import fused_rank
+
+        rows, failures = await asyncio.to_thread(self.context.skills.catalog)
+        hits = fused_rank(
+            [a["query"]], [r["id"] + " " + r["description"] + " " + r["body"][:1800] for r in rows]
+        )
+        limit = min(a.get("limit", 5), 10)
+        return ToolResult(
+            json.dumps(
+                {
+                    "skills": [
+                        {
+                            k: rows[i][k]
+                            for k in (
+                                "id",
+                                "path",
+                                "description",
+                                "required_tools",
+                                "required_commands",
+                                "ready",
+                                "missing_tools",
+                                "missing_commands",
+                            )
+                        }
+                        for i, _ in hits[:limit]
+                    ],
+                    "failures": failures,
                 },
                 ensure_ascii=False,
             )

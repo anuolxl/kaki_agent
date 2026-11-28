@@ -57,3 +57,8 @@ AppController 每个项目一个 Runtime，同一项目最多一个执行中的�
 已有上下文能力保留：快慢路径、8 个 Curator 私有工具、manifest、working state、相关度衰减、无损归档、闭合工具调用组、整用户组裁剪、确定性回退、旧工具结果省略、循环内预算重平衡、溢出有限恢复与原生 reasoning 保留。Token 数为保守估算，不等同服务商 tokenizer 承诺。
 
 本期没有代码差异编辑器、图形化文件回滚审批、可视化模型配置、多 Agent、远程 worker 或 Myna 服务。图形界面可继续要求模型 review、执行测试；人工文件恢复预览仍通过显式 `kaki-agent -C /path/to/repo tui` 的 `/undo` 完成。
+
+
+## v0.4 开发工具
+
+新增受信开发与Skill发现层，详见[模块契约](module-spec/development.md)与[操作手册](development-guide.md)。主loop、上下文、Right Code、SQLite及TUI/App共用Runtime保持统一。

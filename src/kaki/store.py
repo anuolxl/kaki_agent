@@ -294,7 +294,15 @@ class Store:
             row = self.db.execute("SELECT * FROM tool_runs WHERE id=? AND turn_id=?", (run, turn)).fetchone()
             if not row or row["state"] not in ("running", "planned"):
                 raise KakiError("工具结果已经提交或已标记未知")
-            state = "denied" if result.denied else "failed" if result.failed else "succeeded"
+            state = (
+                "unknown"
+                if result.uncertain
+                else "denied"
+                if result.denied
+                else "failed"
+                if result.failed
+                else "succeeded"
+            )
             if result.denied and (result.executed or row["state"] != "planned"):
                 raise KakiError("拒绝执行必须发生在工具启动之前")
             self.db.execute(

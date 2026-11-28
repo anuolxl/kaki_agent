@@ -85,6 +85,34 @@ class ExecOptions(Options):
     path_append: str = ""
 
 
+class DevelopmentOptions(Options):
+    enabled: bool = False
+    protected_branches: list[str] = Field(default_factory=lambda: ["master", "main", "release/*"])
+    allow_push: bool = False
+    allow_mr_create: bool = False
+
+
+class CommandOptions(Options):
+    description: str
+    argv: list[str] = Field(min_length=1)
+    cwd: str | None = None
+    capability: Literal[
+        "workspace.check", "test.execute", "process.execute", "external.read", "external.write"
+    ] = "process.execute"
+    timeout: int = Field(default=120, ge=1, le=3600)
+    allow_arguments: bool = False
+    allowed_flags: list[str] = Field(default_factory=list)
+    path_flags: list[str] = Field(default_factory=list)
+    write_flags: list[str] = Field(default_factory=list)
+    files: dict[str, str] = Field(default_factory=dict)
+    env: dict[str, str] = Field(default_factory=dict)
+
+
+class DiscoveryOptions(Options):
+    enabled: bool = True
+    max_results: int = Field(default=5, ge=1, le=10)
+
+
 class McpOptions(Options):
     type: Literal["stdio"] = "stdio"
     command: str = "npx"
@@ -98,6 +126,9 @@ class ToolsOptions(Options):
     exec: ExecOptions = Field(default_factory=ExecOptions)
     mcp_servers: dict[str, McpOptions] = Field(default_factory=dict)
     disabled_tools: list[str] = Field(default_factory=list)
+    development: DevelopmentOptions = Field(default_factory=DevelopmentOptions)
+    commands: dict[str, CommandOptions] = Field(default_factory=dict)
+    discovery: DiscoveryOptions = Field(default_factory=DiscoveryOptions)
 
     @model_validator(mode="after")
     def browser_only(self):
@@ -117,6 +148,7 @@ class SkillOptions(Options):
     inject_max: int = Field(default=2, ge=0, le=10)
     always_max: int = Field(default=5, ge=0, le=20)
     injection_mode: Literal["full_body", "summary"] = "full_body"
+    catalog_max: int = Field(default=40, ge=1, le=200)
 
 
 class IntentOptions(Options):
@@ -206,7 +238,8 @@ def snake(key: str) -> str:
 def normalize(data: Any) -> Any:
     if isinstance(data, dict):
         return {
-            snake(k): (v if snake(k) in {"env", "extra_headers"} else normalize(v)) for k, v in data.items()
+            snake(k): (v if snake(k) in {"env", "extra_headers", "files"} else normalize(v))
+            for k, v in data.items()
         }
     if isinstance(data, list):
         return [normalize(x) for x in data]
@@ -260,8 +293,12 @@ def save_config(config: Config, path: Path | None = None) -> Path:
     return path
 
 
-def safe_error(error: BaseException | str) -> str:
-    text = str(error) or type(error).__name__
+def redact_text(text: str) -> str:
     text = re.sub(r"(?i)(Bearer\s+)[A-Za-z0-9._-]+", r"\1[REDACTED]", text)
     text = re.sub(r"\bsk-[A-Za-z0-9_-]+", "[REDACTED]", text)
-    return text[:1600]
+    text = re.sub(r"\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", "[REDACTED]", text)
+    return text
+
+
+def safe_error(error: BaseException | str) -> str:
+    return redact_text(str(error) or type(error).__name__)[:1600]

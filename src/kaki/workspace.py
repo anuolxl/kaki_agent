@@ -55,6 +55,8 @@ class Workspace:
             # Explicit inherited rule documents are read-only knowledge, not a write grant.
             if p.parent != root and (p.parent / "docs").is_dir():
                 ws.knowledge_roots.append((p.parent / "docs").resolve())
+                if (p.parent / "index.md").is_file():
+                    ws.knowledge_roots.append((p.parent / "index.md").resolve())
             for match in re.finditer(r"\]\(([^)]+(?:AGENTS|KAKI)\.md)\)", p.read_text(errors="replace")):
                 target = (p.parent / match[1]).resolve()
                 if target.name in {"AGENTS.md", "KAKI.md"} and target in (
