@@ -25,6 +25,7 @@ from kaki.types import KakiError
 
 
 class Instance:
+    # 进程级单实例资源：flock 决定谁拥有本机服务，instance.json 仅让后续启动器找到它。
     def __init__(self):
         self.folder = kaki_home() / "app"
         self.folder.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -33,6 +34,7 @@ class Instance:
         self.owner = False
 
     def acquire(self):
+        # 锁失败表示复用现有 App；不能绕过锁再起一个同名服务。
         try:
             fcntl.flock(self.file, fcntl.LOCK_EX | fcntl.LOCK_NB)
             self.owner = True
@@ -41,6 +43,7 @@ class Instance:
             return False
 
     def write(self, server):
+        # 发布当前实例的 loopback 地址与本地访问 capability；它不是模型 API Key，文件仍须私密。
         data = {"schema_version": 1, "pid": os.getpid(), "origin": server.origin, "token": server.secret}
         temp = self.path.with_suffix(".tmp")
         fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -49,6 +52,7 @@ class Instance:
         os.replace(temp, self.path)
 
     def close(self):
+        # 只清理自己拥有的实例记录和锁，避免退出中的旧进程删除新实例信息。
         if self.owner:
             with contextlib.suppress(OSError, ValueError):
                 if json.loads(self.path.read_text()).get("pid") == os.getpid():
@@ -58,6 +62,7 @@ class Instance:
 
 
 def choose_path(cwd, config):
+    # 工作目录优先显式参数，再配置，最后探测当前 Git 根；最终合法性由 Workspace 检查。
     if cwd:
         return Path(cwd).expanduser().resolve()
     if config.agents.defaults.workspace:
@@ -69,6 +74,7 @@ def choose_path(cwd, config):
 
 
 def reuse(instance, path, browser):
+    # 第二次启动通过已有实例的本机 API 请求聚焦；失败不等于可以绕过单实例锁。
     try:
         info = json.loads(instance.path.read_text())
         url = info["origin"]
@@ -90,6 +96,7 @@ def reuse(instance, path, browser):
 
 
 async def serve(instance, config, path, resume, port, *, on_ready=None):
+    # 创建本机 HTTP/WS 服务并等待停止信号；finally 负责关闭 Controller 所拥有的所有 Runtime。
     server = AppServer(AppController(config), port=port, initial_path=path, resume=resume)
     try:
         await server.start()
@@ -103,15 +110,20 @@ async def serve(instance, config, path, resume, port, *, on_ready=None):
 
 
 class NativeService:
+    # 线程桥：Cocoa 窗口占用主线程，唯一后台线程拥有 asyncio loop 和 App 服务。
     def __init__(self, instance, config, path, resume, port):
         self.args = (instance, config, path, resume, port)
+        # threading.Event 跨线程握手；与 Runtime 的 asyncio Event 用途不同。
         self.ready, self.done = threading.Event(), threading.Event()
+        # 事件循环只能由后台线程创建；UI 线程通过 thread-safe 投递操作。
         self.loop = None
         self.server = None
         self.error = None
+        # 这个线程拥有 App 的异步服务；模型/工具循环仍以 asyncio Task 调度。
         self.thread = threading.Thread(target=self._run, name="kaki-app-runtime", daemon=True)
 
     def _run(self):
+        # 后台线程在这里创建事件循环；ready/done 把启动与关闭结果交回原生窗口线程。
         async def run():
             self.loop = asyncio.get_running_loop()
 
@@ -130,11 +142,13 @@ class NativeService:
             self.done.set()
 
     def stop(self):
+        # 跨线程只投递 stop_event，不直接从 Cocoa 线程操作 asyncio 对象。
         if self.loop and self.server and not self.done.is_set():
             self.loop.call_soon_threadsafe(self.server.stop_event.set)
 
 
 def native_window(instance, config, path, resume, port):
+    # 原生窗口生命周期入口；服务先就绪再显示，退出时等待内核把执行事实收尾。
     import webview
     from PyObjCTools import AppHelper, MachSignals
     from webview.menu import Menu, MenuAction
@@ -155,6 +169,7 @@ def native_window(instance, config, path, resume, port):
     )
 
     def closing():
+        # 窗口关闭先请求服务停止；服务未完成时阻止 Cocoa 立即 terminate。
         service.stop()
         # Cocoa's terminate action otherwise exits before asyncio can persist cancellation.
         # The monitor closes the window after the service has actually finished.
@@ -169,6 +184,7 @@ def native_window(instance, config, path, resume, port):
             window.evaluate_js("window.kakiOpenWorkspace(" + json.dumps(selected[0]) + ")")
 
     def monitor():
+        # 后台服务真正结束后再销毁窗口，避免界面消失却留下编程任务。
         service.done.wait()
         with contextlib.suppress(Exception):
             window.destroy()
@@ -183,6 +199,7 @@ def native_window(instance, config, path, resume, port):
     exit_code = [0]
 
     def signals():
+        # 启动期用 wakeup pipe 接收信号，让 Ctrl+C 不被 Cocoa 主循环延迟。
         while not watching.is_set():
             ready, _, _ = select.select([read_fd], [], [], 0.2)
             if ready:
@@ -195,6 +212,7 @@ def native_window(instance, config, path, resume, port):
                 break
 
     def install_cocoa_signals():
+        # 接管 pywebview 安装的信号处理，先完成异步收尾，再退出 GUI。
         def stop(signum):
             if signum == signal.SIGINT:
                 exit_code[0] = 130
@@ -233,6 +251,7 @@ def native_window(instance, config, path, resume, port):
 
 
 def launch(cwd=None, config_path=None, resume=None, model=None, *, browser=False, no_open=False, port=0):
+    # App 总入口：配置 → 单实例判定 → 原生或浏览器适配；两种形式共用本机服务与内核。
     config = load_config(config_path, model=model)
     path = choose_path(cwd, config)
     instance = Instance()
@@ -257,6 +276,7 @@ def launch(cwd=None, config_path=None, resume=None, model=None, *, browser=False
 
 
 def main():
+    # 供独立 kaki-app 可执行入口使用；参数最终仍汇入同一 launch。
     parser = argparse.ArgumentParser(description="Kaki本机会话App")
     parser.add_argument("-C", "--cwd", type=Path)
     parser.add_argument("--config", type=Path)

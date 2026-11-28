@@ -26,6 +26,7 @@ IDENTIFIER = re.compile(
 
 
 def local_analysis(text, history, cfg):
+    # 本地保守策略：区分解释/编辑/测试计划与执行，指代不足时形成澄清线索，不擅自补授权。
     actions = []
     if re.search(r"介绍|解释|说明|什么|如何|\bexplain\b", text, re.I):
         actions.append("explain")
@@ -73,6 +74,7 @@ def local_analysis(text, history, cfg):
 
 
 def validate_rewrite(plan, original, history, cfg):
+    # 验证来源存在并保留标识符、大小写、数字与否定约束；不是形式化语义证明。
     available = {m.id for m in history if m.id > 0}
     if set(plan.source_ids) - available:
         raise ValueError("invalid_source_ids")

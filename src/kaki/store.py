@@ -14,6 +14,10 @@ from typing import Any
 
 from kaki.types import TERMINAL, KakiError, Message, ModelResponse, ToolResult, TurnResult, now, uid
 
+# SQL 表定义是真实协议数据，注释不改字符串内容；各表职责见 core.md。
+# sessions/turns 管作用域与幂等，messages/tool_runs 保存不可替代的执行事实。
+# events/model_calls 提供审计与用量，context_state/archives/memories 保存派生选择与版本。
+# snapshots/decisions 记录恢复和交互；SQLite 是嵌入文件，不需要启动数据库服务。
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions(
  id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, title TEXT NOT NULL, created TEXT NOT NULL, updated TEXT NOT NULL,
@@ -60,19 +64,25 @@ CREATE INDEX IF NOT EXISTS events_turn ON events(turn_id,seq);
 
 
 def dumps(value: Any) -> str:
+    # 统一持久 JSON 编码，不把原生项改造成自定义模型文本。
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
 class Store:
+    # 持久事实的唯一访问层；每个实例由一个专用线程独享 SQLite 连接，不是本机数据库服务。
     """Only this worker accesses the SQLite connection; external I/O never holds a transaction."""
 
     def __init__(self, path: Path, workspace_id: str):
+        # 这里只分配连接所有权；真正打开、迁移与恢复仍在 Store.run 的线程中执行。
         self.path = path
         self.workspace_id = workspace_id
+        # 单 worker 保证 SQLite 连接线程归属，数据库 I/O 不占主事件循环。
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="kaki-store")
+        # 仅在上述 worker 内访问；进程关闭后不复用该连接。
         self.db: sqlite3.Connection | None = None
 
     async def run(self, operation: str, *args, **kwargs):
+        # 把短数据库操作排入唯一 worker，避免在 asyncio/UI 线程同步阻塞或跨线程共享连接。
         if operation.startswith("_"):
             raise ValueError("invalid store operation")
         method = getattr(self, "_" + operation)
@@ -80,9 +90,11 @@ class Store:
         return await loop.run_in_executor(self.executor, functools.partial(method, *args, **kwargs))
 
     async def open(self):
+        # 所有打开/迁移动作也通过同一连接 owner 执行。
         await self.run("open")
 
     def _open(self):
+        # 设置 WAL/完整同步和外键，必要时先一致备份再迁移；拒绝未知的新 schema。
         if self.db is not None:
             return
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -115,21 +127,25 @@ class Store:
             ) from None
 
     async def close(self):
+        # 先关闭该线程的连接，再结束执行器；关闭后的 Store 实例不能重新使用。
         await self.run("close")
         self.executor.shutdown(wait=True)
 
     def _close(self):
+        # 提交并关闭连接；异步调用方随后关闭单 worker 执行器。
         if self.db:
             self.db.close()
             self.db = None
 
     def _event(self, session: str, turn: str, kind: str, data: dict):
+        # 与业务写事务一同记录关键事件；不同于 Runtime.emit 的全部实时 UI 事件。
         self.db.execute(
             "INSERT INTO events(session_id,turn_id,type,payload,created) VALUES(?,?,?,?,?)",
             (session, turn, kind, dumps(data), now()),
         )
 
     def _new_session(self, title: str = "新会话") -> str:
+        # 显式写会话列，避免以后加列破坏 INSERT 位置；会话不创建任何执行循环。
         identity = uid("s_")
         with self.db:
             self.db.execute(
@@ -139,6 +155,7 @@ class Store:
         return identity
 
     def _sessions(self, archived: bool = False) -> list[dict]:
+        # 项目内按更新时间查询会话，软归档与正常列表分开。
         return [
             dict(x)
             for x in self.db.execute(
@@ -148,6 +165,7 @@ class Store:
         ]
 
     def _session_summaries(self, archived: bool = False) -> list[dict]:
+        # 组合侧边栏状态与预览，供导航使用而非替代逐条执行证据。
         return [
             dict(row)
             for row in self.db.execute(
@@ -159,6 +177,7 @@ class Store:
         ]
 
     def _rename_session(self, session: str, title: str):
+        # 标题仅是导航信息；校验长度/控制字符后更新，不改原始任务内容。
         self._session(session)
         title = title.strip()
         if not title or len(title) > 80 or any(ord(char) < 32 for char in title):
@@ -167,6 +186,7 @@ class Store:
             self.db.execute("UPDATE sessions SET title=?,updated=? WHERE id=?", (title, now(), session))
 
     def _archive_session(self, session: str, archived: bool):
+        # 软归档保留消息、工具与快照；活跃任务的会话不能归档。
         self._session(session)
         if self.db.execute(
             "SELECT 1 FROM turns WHERE session_id=? AND status IN ('queued','running','waiting_user')",
@@ -179,6 +199,7 @@ class Store:
             )
 
     def _session(self, identity: str) -> dict:
+        # 每次按 workspace_id 校验归属，避免一个 ID 读取别的项目。
         row = self.db.execute(
             "SELECT * FROM sessions WHERE id=? AND workspace_id=?", (identity, self.workspace_id)
         ).fetchone()
@@ -187,6 +208,7 @@ class Store:
         return dict(row)
 
     def _session_models(self, session: str) -> list[str]:
+        # 只用 main/finalize 校验恢复主模型，理解模型不能改变主会话约束。
         self._session(session)
         return [
             r[0]
@@ -198,6 +220,7 @@ class Store:
         ]
 
     def _append(self, session: str, turn: str, message: Message) -> Message:
+        # 赋稳定数据库 ID 与会话内序号；payload 不混入这些存储层标识。
         seq = self.db.execute(
             "SELECT COALESCE(MAX(seq),0)+1 FROM messages WHERE session_id=?", (session,)
         ).fetchone()[0]
@@ -211,6 +234,7 @@ class Store:
     def _accept_turn(
         self, session: str, text: str, request_id: str | None = None
     ) -> tuple[str, Message, bool]:
+        # 同一事务完成请求幂等与用户消息接收；重复 ID 不会再跑一次副作用。
         self._session(session)
         request_id = request_id or uid("r_")
         previous = self.db.execute("SELECT * FROM turns WHERE request_id=?", (request_id,)).fetchone()
@@ -234,6 +258,7 @@ class Store:
         return turn, message, True
 
     def _messages(self, session: str) -> list[Message]:
+        # 恢复原始领域消息，并从调用日志派生旧记录的 token 预留；不重写历史 JSON。
         self._session(session)
         # Derive accounting for legacy messages from their immutable call/event
         # records; never rewrite the original transcript merely to resume it.
@@ -263,6 +288,7 @@ class Store:
         return result
 
     def _commit_model(self, session: str, turn: str, response: ModelResponse) -> tuple[Message, list[dict]]:
+        # 把完整 assistant 输出和所有 planned tool_runs 原子提交，确保先有意图再执行工具。
         with self.db:
             self._assert_active(turn)
             msg = self._append(
@@ -299,11 +325,13 @@ class Store:
         return msg, runs
 
     def _assert_active(self, turn: str):
+        # 迟到回调不能继续向终态 Turn 追加工具副作用。
         row = self.db.execute("SELECT status FROM turns WHERE id=?", (turn,)).fetchone()
         if not row or row[0] in TERMINAL:
             raise KakiError("任务已结束或不存在，不能继续执行")
 
     def _mark_running(self, run: str):
+        # 实际 I/O 前提交状态；崩溃后 running 只能判未知，不能当未执行重试。
         with self.db:
             row = self.db.execute("SELECT * FROM tool_runs WHERE id=?", (run,)).fetchone()
             if not row or row["state"] != "planned":
@@ -312,6 +340,7 @@ class Store:
             self.db.execute("UPDATE tool_runs SET state='running',started=? WHERE id=?", (now(), run))
 
     def _commit_tool(self, session: str, turn: str, run: str, result: ToolResult) -> Message:
+        # 结果与配对 tool 消息同事务写入；边界标记防止工具文本获得用户指令优先级。
         with self.db:
             row = self.db.execute("SELECT * FROM tool_runs WHERE id=? AND turn_id=?", (run, turn)).fetchone()
             if not row or row["state"] not in ("running", "planned"):
@@ -332,6 +361,7 @@ class Store:
                 (state, dumps(asdict(result)), now(), run),
             )
             # The observation is data; it cannot acquire the priority of a user/system instruction.
+            # 工具/网页内容是低权限数据，显式标出来源，不能伪装成新的用户或系统批准。
             boundary = uid("data_")
             text = f"[{boundary}: untrusted tool data; source={row['name']}]\n{result.text}\n[/{boundary}]"
             msg = self._append(
@@ -349,6 +379,7 @@ class Store:
         return msg
 
     def _draft(self, turn: str, text: str):
+        # 草稿仅为恢复诊断；没有上游完整终事件时不得当作可执行模型输出。
         with self.db:
             self.db.execute(
                 "UPDATE turns SET result_json=? WHERE id=? AND status NOT IN ('completed','failed','cancelled','interrupted')",
@@ -356,6 +387,7 @@ class Store:
             )
 
     def _pending_observations(self, turn: str, *, reason: str):
+        # 补齐被取消/未知的工具结果，关闭完整协议组，避免恢复后出现孤立调用。
         row = self.db.execute("SELECT session_id FROM turns WHERE id=?", (turn,)).fetchone()
         if not row:
             return
@@ -371,6 +403,7 @@ class Store:
             self._append(row["session_id"], turn, Message("tool", text, tool_call_id=run["tool_call_id"]))
 
     def _finish_turn(self, result: TurnResult):
+        # 终态写入点；已结束 Turn 不允许后续回调二次覆盖。
         with self.db:
             self._assert_active(result.turn_id)
             self._pending_observations(result.turn_id, reason=result.stop_reason)
@@ -396,6 +429,7 @@ class Store:
             self._event(row["session_id"], result.turn_id, "turn.finished", asdict(result))
 
     def _recover(self, session: str) -> list[dict]:
+        # 租约允许时协调崩溃残留：planned 取消、running 未知、交互过期；从不重放命令。
         self._session(session)
         recovered = []
         with self.db:
@@ -422,6 +456,7 @@ class Store:
         return recovered
 
     def _turns(self, session: str) -> list[dict]:
+        # 读取历史轮次，保留真实结束原因，不把一次最终回答推断为业务成功。
         self._session(session)
         return [
             dict(r)
@@ -429,12 +464,14 @@ class Store:
         ]
 
     def _tool_runs(self, turn: str) -> list[dict]:
+        # 返回本轮逐项执行日志；Turn 统计可以据此重建，避免后续模型异常清零事实。
         return [
             dict(r)
             for r in self.db.execute("SELECT * FROM tool_runs WHERE turn_id=? ORDER BY rowid", (turn,))
         ]
 
     def _question(self, turn: str, question: dict | None):
+        # 保存给模型看的普通任务问答，与独立审批 ledger 的语义不同。
         with self.db:
             self._assert_active(turn)
             self.db.execute(
@@ -443,6 +480,7 @@ class Store:
             self._event("", turn, "question.requested" if question else "question.answered", question or {})
 
     def _decision_create(self, identity, session, turn, kind, question, options, operation):
+        # 先持久化问题与作用域，再把 Turn 设为 waiting_user，供重连与审计使用。
         with self.db:
             self._assert_active(turn)
             if self.db.execute(
@@ -469,6 +507,7 @@ class Store:
             self._event(session, turn, "question.requested", {"question_id": identity, "kind": kind})
 
     def _decision_answer(self, identity, session, turn, response):
+        # 校验问题仍有效后提交回答；澄清会追加真实 user 消息，授权不会伪造任务原文。
         with self.db:
             self._assert_active(turn)
             row = self.db.execute(
@@ -488,6 +527,7 @@ class Store:
             return response
 
     def _decision_expire(self, identity):
+        # 取消/结束后问题只失效不删除，旧窗口不能拿过期 ID 解锁新任务。
         with self.db:
             self.db.execute(
                 "UPDATE decisions SET state='expired',ended=? WHERE id=? AND state='pending'",
@@ -495,17 +535,20 @@ class Store:
             )
 
     def _decisions(self, turn):
+        # 保留本轮交互事实供 UI/审计，恢复时不会自动重新批准。
         return [
             dict(r)
             for r in self.db.execute("SELECT * FROM decisions WHERE turn_id=? ORDER BY rowid", (turn,))
         ]
 
     def _trace(self, session, turn, kind, data):
+        # 只记录派生分析诊断，不能把它当网络调用实际完成证明。
         with self.db:
             self._assert_active(turn)
             self._event(session, turn, kind, data)
 
     def _call_record(self, record: dict):
+        # 按本地调用 ID 更新一次真实网络尝试；重试是不同 ID，不覆盖已知用量。
         with self.db:
             self.db.execute(
                 "INSERT INTO model_calls VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,usage=excluded.usage,metadata=excluded.metadata,ended=excluded.ended",
@@ -523,6 +566,7 @@ class Store:
             )
 
     def _usage(self, turn: str) -> dict:
+        # 累计所有已知调用；缺失 usage 计入 unknown_calls，不能伪装成零成本成功。
         summary = {
             "prompt_tokens": 0,
             "completion_tokens": 0,
@@ -544,6 +588,7 @@ class Store:
         return summary
 
     def _context_get(self, session: str) -> dict:
+        # 读取可重建的窗口状态，不是第二份原始会话事实。
         row = self.db.execute("SELECT * FROM context_state WHERE session_id=?", (session,)).fetchone()
         return (
             {
@@ -563,6 +608,7 @@ class Store:
         working: dict | None = None,
         plan: dict | None = None,
     ):
+        # 合并 manifest/working/plan 并递增版本；原始消息内容始终不在这里改写。
         old = self._context_get(session)
         with self.db:
             self.db.execute(
@@ -579,6 +625,7 @@ class Store:
     def _archive_add(
         self, session: str, ids: list[int], artifact: dict, summary: str, tags: list[str]
     ) -> str:
+        # 归档引用带所属 Session 与稳定消息 ID，防止跨会话误召回。
         identity = uid("archive_")
         with self.db:
             self.db.execute(
@@ -588,6 +635,7 @@ class Store:
         return identity
 
     def _archive_get(self, session: str, identity: str) -> dict:
+        # 读取引用前验证会话归属；文件内容 hash 由 Archive 层再检查。
         r = self.db.execute(
             "SELECT * FROM archives WHERE session_id=? AND id=?", (session, identity)
         ).fetchone()
@@ -596,6 +644,7 @@ class Store:
         return {**dict(r), "message_ids": json.loads(r["message_ids"]), "artifact": json.loads(r["artifact"])}
 
     def _memories(self, user_id: str) -> list[dict]:
+        # 召回只允许当前项目/用户的 active 记忆版本。
         return [
             dict(r)
             for r in self.db.execute(
@@ -607,6 +656,7 @@ class Store:
     def _remember(
         self, user_id: str, content: str, kind: str, source_ids: list[int], replaces: str | None = None
     ) -> str:
+        # 显式记忆产生新版本，旧版本保留；不把模型猜测自动升级为长期事实。
         identity = uid("m_")
         version = 1
         with self.db:
@@ -639,6 +689,7 @@ class Store:
         return identity
 
     def _retract(self, user_id: str, identity: str):
+        # 撤回记忆只改变可检索状态，保留审计历史。
         with self.db:
             r = self.db.execute(
                 "UPDATE memories SET state='retracted',updated=? WHERE id=? AND user_id=? AND workspace_id=?",
@@ -648,6 +699,7 @@ class Store:
                 raise KakiError("记忆不存在")
 
     def _snapshot(self, identity: str, turn: str, phase: str, state: str, commit: str | None, metadata: dict):
+        # 登记快照的 creating/ready/failed；只有 ready 的 commit 才能用于恢复。
         with self.db:
             self.db.execute(
                 "INSERT INTO snapshots VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET state=excluded.state,commit_id=excluded.commit_id,metadata=excluded.metadata",
@@ -655,6 +707,7 @@ class Store:
             )
 
     def _snapshots(self, turn: str | None = None) -> list[dict]:
+        # 查询记录中的 ready/failed 状态，不能仅凭存在一个 commit 字符串判断可恢复。
         rows = self.db.execute(
             "SELECT * FROM snapshots" + (" WHERE turn_id=?" if turn else "") + " ORDER BY created",
             (turn,) if turn else (),

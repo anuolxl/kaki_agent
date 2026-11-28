@@ -35,15 +35,19 @@ secrets.yaml
 
 
 class Checkpoint:
+    # 独立 shadow Git 快照；git-dir 和 index 在项目 state 内，不能改用户仓库的索引/分支。
     def __init__(self, workspace: Workspace, store, config: Config):
         self.workspace, self.store, self.config = workspace, store, config
+        # 路径必须位于当前项目 state；所有影子 Git 命令都显式使用它。
         self.git_dir = (workspace.state / config.runtime.checkpoint.shadow_dir).resolve()
         if self.git_dir == workspace.state or not self.git_dir.is_relative_to(workspace.state):
             raise KakiError("shadowDir必须在当前项目状态目录内")
         self.ready = False
+        # 仅用于定期触发影子仓 gc，不代表业务 Git 提交次数。
         self.commits = 0
 
     async def git(self, *args, check=True) -> tuple[int, bytes, bytes]:
+        # 所有快照命令强制指定影子 git-dir，禁用户 hooks/filters；工作树只是待读取的数据源。
         env = {k: v for k, v in os.environ.items() if k in {"PATH", "HOME", "TMPDIR", "LANG", "LC_ALL"}}
         env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL="/dev/null")
         command = [
@@ -81,6 +85,7 @@ class Checkpoint:
         return p.returncode, out, err
 
     async def ensure(self):
+        # 准备影子仓与排除/原始字节规则，避免 CRLF、二进制或用户过滤器改变保存内容。
         if self.ready:
             return
         self.git_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -94,6 +99,7 @@ class Checkpoint:
         self.ready = True
 
     async def capture(self, turn: str, phase: str) -> dict:
+        # 先登记 creating，再生成树和 commit；失败保持 failed，不能冒充可自动恢复。
         identity = uid("snap_")
         metadata = {
             "root": str(self.workspace.root),
@@ -134,6 +140,7 @@ class Checkpoint:
             return {"id": identity, "commit": None, "state": "failed", "phase": phase, "error": str(exc)}
 
     async def tree(self, commit: str) -> dict[str, dict]:
+        # 读取指定快照树的对象 ID 与文件模式，供恢复预览对比。
         if not commit or not all(c in "0123456789abcdef" for c in commit):
             raise KakiError("非法快照提交ID")
         _, raw, _ = await self.git("ls-tree", "-rz", commit)
@@ -147,6 +154,7 @@ class Checkpoint:
         return result
 
     def current_oid(self, path: str) -> str | None:
+        # 按 Git blob 规则计算当前原始字节 ID，不依赖用户 index 的暂存状态。
         p = self.workspace.root / path
         if p.is_symlink():
             raw = os.fsencode(os.readlink(p))
@@ -157,6 +165,7 @@ class Checkpoint:
         return hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
 
     def current_mode(self, path: str) -> str | None:
+        # 恢复需要同时比较类型/可执行位；内容没变也不能覆盖用户后改的权限。
         p = self.workspace.root / path
         if p.is_symlink():
             return "120000"
@@ -165,6 +174,7 @@ class Checkpoint:
         return "040000" if p.exists() else None
 
     async def plan_restore(self, turn: str) -> dict:
+        # 先形成 before/after 到当前工作树的冲突清单；预览本身不是写入授权。
         snapshots = await self.store.run("snapshots", turn)
         before = next((s for s in snapshots if s["phase"] == "before" and s["state"] == "ready"), None)
         after = next(
@@ -202,6 +212,7 @@ class Checkpoint:
         }
 
     async def apply(self, plan: dict, approved_paths: list[str]) -> dict:
+        # 仅恢复已批准路径，写入前再次校验当前内容和模式，避免覆盖任务后的外部编辑。
         allowed = {x["path"]: x for x in plan["paths"]}
         restored = []
         conflicts = []

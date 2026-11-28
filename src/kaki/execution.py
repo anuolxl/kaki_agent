@@ -12,10 +12,12 @@ from kaki.types import KakiError
 
 
 class ExecutionTimeout(KakiError):
+    # 进程超时不表示已发生副作用被撤回；调用方需保留现场并判断未知结果。
     pass
 
 
 def process_env(extra=None):
+    # 子进程环境按白名单继承；这是减少意外传递凭据，不是文件系统或网络隔离。
     allowed = {
         "PATH",
         "HOME",
@@ -42,6 +44,7 @@ def process_env(extra=None):
 
 
 async def run_process(argv, cwd: Path, timeout=120, env=None):
+    # 有界收集 stdout/stderr，超时/取消时尝试终止进程组；不使用 shell=True。
     try:
         process = await asyncio.create_subprocess_exec(
             *argv,

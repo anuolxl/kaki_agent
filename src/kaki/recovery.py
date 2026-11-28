@@ -6,10 +6,12 @@ import json
 
 
 class Recovery:
+    # 把日志中的中断转换成核验清单；恢复会话不代表重启旧的工具执行流程。
     def __init__(self, store):
         self.store = store
 
     async def reconcile(self, session: str) -> dict:
+        # 先协调残留状态，再汇总确定结果/未知操作/快照；只有新观察才能解除未知。
         interrupted = await self.store.run("recover", session)
         turns = await self.store.run("turns", session)
         items = []
@@ -49,6 +51,7 @@ class Recovery:
 
     @staticmethod
     def context(plan: dict) -> str:
+        # 给下一轮提供低权限事实线索；旧 DOM、旧批准和 UNKNOWN 结果都不能直接重放。
         if not plan.get("items"):
             return ""
         return (

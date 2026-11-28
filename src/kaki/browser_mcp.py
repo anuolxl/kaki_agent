@@ -20,12 +20,17 @@ PLAYWRIGHT_VERSION = "0.0.85"
 
 
 class BrowserMcp:
+    # 一个工作区一个 MCP owner task；anyio 的上下文必须在进入它的同一协程中退出。
     def __init__(self, workspace: Workspace, config: Config):
+        # 队列承接调用者请求，ready 只表示连接就绪；没有发起用户浏览任务。
         self.workspace, self.config = workspace, config
         self.option = config.tools.mcp_servers.get("browser")
+        # 元素为工具名、参数和调用者 Future；同一 MCP session 串行处理。
         self.queue = asyncio.Queue()
+        # owner 协程持有 anyio 资源，普通调用者不能跨任务直接关闭它。
         self.task = None
         self.ready = None
+        # list_tools 的真实元数据；宿主注册后才会成为模型可见能力。
         self.tools = []
         self.error = None
 
@@ -34,6 +39,7 @@ class BrowserMcp:
         return self.option is not None
 
     async def start(self):
+        # 启动唯一 owner 并等待就绪；shield 防止单个等待方取消把共享 ready Future 也取消。
         if not self.enabled:
             return []
         if self.task is None:
@@ -42,6 +48,7 @@ class BrowserMcp:
         return await asyncio.wait_for(asyncio.shield(self.ready), 90)
 
     async def _serve(self):
+        # 在一个协程内持有 stdio 与 ClientSession，再串行消费工具调用并规范化结果。
         opt = self.option
         args = list(opt.args or ["-y", f"@playwright/mcp@{PLAYWRIGHT_VERSION}", "--browser", "chrome"])
         if "--isolated" not in args and not any(x.startswith("--user-data-dir") for x in args):
@@ -53,6 +60,7 @@ class BrowserMcp:
         )
 
         async def roots(_):
+            # 向 MCP 报告当前工作区 roots；这不是授予其任意主机路径访问权。
             return types.ListRootsResult(
                 roots=[types.Root(uri=self.workspace.root.as_uri(), name=self.workspace.root.name)]
             )
@@ -150,6 +158,7 @@ class BrowserMcp:
             log.close()
 
     async def call(self, name: str, arguments: dict) -> ToolResult:
+        # 请求通过队列送给 owner；取消调用方时联动取消该次 MCP 操作。
         await self.start()
         if self.task.done():
             raise KakiError("浏览器MCP已退出；请重新启动Kaki后重试")
@@ -163,6 +172,7 @@ class BrowserMcp:
         return await future
 
     async def close(self):
+        # 让 owner 退出其自身上下文并释放子进程，避免跨任务关闭 anyio cancel scope。
         if self.task and not self.task.done():
             await self.queue.put(None)
             try:

@@ -20,6 +20,7 @@ def sha(path):
 
 
 def bundle_references(source, target):
+    # 把被引用的 Markdown 依赖闭包打包为自包含 Skill；不因此注册或激活兄弟 Skill。
     """Make trusted local Markdown dependencies self-contained without adding extra Skills."""
     mapping = {p.resolve(): target / p.relative_to(source) for p in source.rglob("*.md")}
     queue = list(mapping)
@@ -55,6 +56,7 @@ def bundle_references(source, target):
 
 
 def install(args):
+    # 备份并更新本机配置，复制能力所需文件、生成可信 pin；不登录、不创建业务测试任务。
     home = args.home.expanduser().resolve()
     home.mkdir(parents=True, exist_ok=True, mode=0o700)
     config_path = home / "config.json"
@@ -216,6 +218,7 @@ profile 的参数是 JSON arguments 数组，禁止将整段 Shell 命令作为�
 
 
 def main():
+    # 用户显式运行的安装入口，路径参数只用于本地能力准备。
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--home", type=Path, default=Path(os.environ.get("KAKI_HOME", "~/.kaki")))
     parser.add_argument("--harness", type=Path, required=True)
