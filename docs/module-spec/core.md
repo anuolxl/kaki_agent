@@ -105,3 +105,5 @@ Message新增派生字段native_token_reserve=None，不写入canonical payload�
 依据：OpenAI Responses reasoning指南说明reasoning tokens计入输出用量，encrypted_content为可回传的加密状态（https://developers.openai.com/api/docs/guides/reasoning）。本机实际Right Code记录包含reasoning_tokens=10/20/38等，不把密文字节的BPE长度当作真实推理用量。
 
 含原生reasoning的窗口在压力下只移除完整closed exchange，不改写保留的旧工具正文；这样保留项的内容与顺序保持原样，避免修改历史前缀导致上游丢弃reasoning而反复读取。纯文本窗口仍可使用旧工具正文占位策略。此规则同时作用assemble和active rebalance。官方前缀保持指南说明修改旧工具输出可能移除reasoning，删除完整项与追加新项本身不构成相同原因（具体网关仍以实际行为为准）。
+
+快照每次capture重建Kaki自身shadow Git index，再按当前排除规则add；旧版本已进入shadow索引的.worktrees Gitlink不会因新ignore规则而残留。只作用于state/checkpoints影子仓，用户Git index/HEAD/已有工作树文件不变；test_capture_rebuilds_shadow_index_after_new_nested_repo_exclusion验证升级场景。
