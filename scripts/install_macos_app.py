@@ -15,6 +15,7 @@ from kaki import __version__
 
 
 def install(destination: Path, executable: Path):
+    # 生成用户级 Finder/Dock 启动器；只更新标识属于 Kaki 的 App，不替换同名第三方应用。
     if sys.platform != "darwin":
         raise SystemExit("This launcher is for macOS")
     if not executable.is_file():
@@ -65,6 +66,7 @@ def install(destination: Path, executable: Path):
 
 
 def main():
+    # 安装器仅负责命令/路径选择，真正运行仍调用已经安装的 kaki-app。
     parser = argparse.ArgumentParser()
     parser.add_argument("--destination", type=Path, default=Path.home() / "Applications/Kaki.app")
     parser.add_argument(

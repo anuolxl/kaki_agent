@@ -53,6 +53,7 @@ DESCRIPTIONS = {
 
 
 def parse_plan(data: dict) -> ContextPlan:
+    # 私有模型提交的 plan 也不可信：限制字段、ID 类型和容器形状后再交窗口引擎。
     fields = ContextPlan.__dataclass_fields__
     unknown = set(data) - set(fields)
     if unknown:
@@ -70,10 +71,12 @@ def parse_plan(data: dict) -> ContextPlan:
 
 
 class Curator:
+    # 有时限的上下文规划器，只能调用私有预算/历史工具，不能执行代码或浏览器副作用。
     def __init__(self, engine):
         self.engine = engine
 
     async def trace(self, session: str, turn: str, event: str, payload: dict):
+        # 保存脱敏后的规划诊断，帮助解释为何走回退；它不等同于完整请求日志。
         root = self.engine.workspace.state / "context" / "traces" / session
         root.mkdir(parents=True, exist_ok=True, mode=0o700)
         with (root / (turn + ".jsonl")).open("a") as f:
@@ -91,6 +94,7 @@ class Curator:
         working: dict,
         turn_id: str,
     ) -> tuple[AssembledContext | None, dict]:
+        # 只给受限 manifest 和当前请求，接受计划前仍经 Python 校验；超时或无效输出走确定性回退。
         e = self.engine
         private_tools = [
             {

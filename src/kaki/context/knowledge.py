@@ -19,6 +19,7 @@ from .tokens import excerpt
 
 
 def terms(text: str) -> list[str]:
+    # 本地词法检索分词：Latin 标识符加中文二元词，不是大模型 embedding 或向量数据库。
     latin = re.findall(r"[a-z0-9_]+", text.lower())
     chinese = re.findall(r"[\u3400-\u9fff]+", text)
     return latin + [
@@ -27,6 +28,7 @@ def terms(text: str) -> list[str]:
 
 
 def rank(query: str, documents: list[str]) -> list[tuple[int, float]]:
+    # 为有限本地文档计算 BM25 排序，保持可解释召回；分数不是执行正确性的证明。
     q = set(terms(query))
     bags = [Counter(terms(x)) for x in documents]
     avg = sum(sum(x.values()) for x in bags) / max(1, len(bags))
@@ -46,10 +48,12 @@ def rank(query: str, documents: list[str]) -> list[tuple[int, float]]:
 
 
 class Memory:
+    # 项目/用户范围的显式记忆；读取可检索，新增必须有真实来源和用户记忆意图。
     def __init__(self, store: Store, config: Config):
         self.store, self.config = store, config
 
     async def recall(self, query: str, limit: int | None = None, queries=None) -> list[dict]:
+        # 在当前 Store 范围召回 active 版本，原文与派生检索词融合，不自动跨项目读取。
         if self.config.memory.backend is None:
             return []
         rows = await self.store.run("memories", self.config.memory.user_id)
@@ -64,6 +68,7 @@ class Memory:
     async def remember(
         self, content: str, source_ids: list[int], kind: str = "explicit", replaces: str | None = None
     ):
+        # 限制单条长度、来源与凭据样式；替代保留历史版本，不做静默覆盖。
         if self.config.memory.backend is None:
             raise KakiError("memory.backend=null，长期记忆已关闭")
         if len(content) > 4000:
@@ -75,6 +80,7 @@ class Memory:
         )
 
     async def segment(self, query: str, queries=None) -> tuple[str, dict]:
+        # 把少量带来源的记忆作为提示数据，不把旧记忆当本轮操作批准。
         hits = await self.recall(query, queries=queries)
         text = "\n".join(
             f"- {excerpt(r['content'], 250)} [memory={r['id']}; sources={r['source_ids']}; version={r['version']}]"
@@ -87,6 +93,7 @@ class Memory:
 
 
 class Skills:
+    # 按本机/项目目录管理 Skill；正文、依赖就绪和执行权限是不同层。
     def __init__(self, workspace: Workspace, config: Config):
         self.workspace, self.config = workspace, config
         self.roots = [
@@ -98,6 +105,7 @@ class Skills:
         self.available_commands = None
 
     def catalog(self) -> tuple[list[dict], list[str]]:
+        # 读取 frontmatter 并按后根覆盖同名项；缺工具/profile 的 Skill 明确标记 unavailable。
         entries = {}
         failures = []
         for root in self.roots:
@@ -164,6 +172,7 @@ class Skills:
         return list(entries.values()), failures
 
     def resolve(self, query: str, queries=None) -> tuple[str, dict]:
+        # 显式原文调用优先，词法融合召回少量正文，其余按需读，控制窗口开销。
         rows, failures = self.catalog()
         cfg = self.config.skill_forge
         unavailable = [r for r in rows if not r["ready"]]
@@ -241,6 +250,7 @@ class Skills:
         }
 
     def read(self, path: str) -> str:
+        # 引用必须位于 Skill 根且不能是 private_paths/凭据文件，避免把受保护实现送模型。
         p = Path(path).expanduser().resolve()
         if not any(p.is_relative_to(root.resolve()) for root in self.roots):
             raise KakiError("不在本地Skill根目录")
@@ -263,10 +273,12 @@ class Skills:
 
 
 class Rules:
+    # 读取工作区明确声明的规则文件，保留来源路径；规则加载不授予跨目录写权限。
     def __init__(self, workspace: Workspace):
         self.workspace = workspace
 
     def segment(self) -> str:
+        # 把规则和实际来源路径放入提示，方便理解继承关系与定位约束。
         parts = []
         for path in self.workspace.rule_files:
             parts.append(f"## Repository instructions: {path}\n" + path.read_text(errors="replace"))

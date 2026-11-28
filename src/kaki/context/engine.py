@@ -30,19 +30,24 @@ IDENTITY = """# Kaki
 
 
 class ContextEngine:
+    # 窗口选择与最终预算的统一入口；源历史在 Store，活动窗口只是可以重建的投影。
     def __init__(self, workspace: Workspace, store: Store, config: Config, provider):
+        # 长期服务归当前 Runtime，Session 切换后窗口状态仍从对应 Store 记录载入。
         self.workspace, self.store, self.config, self.provider = workspace, store, config, provider
         self.memory = Memory(store, config)
         self.skills = Skills(workspace, config)
         self.rules = Rules(workspace)
         self.archive = Archive(workspace, store, config)
         self.curator = Curator(self)
+        # 最近窗口的 UI/诊断投影，不是完整历史或新的任务授权。
         self.last_metadata = {}
 
     def protected_groups(self, history: list[Message]) -> list[list[Message]]:
+        # 保护最初用户组的约束；极长工具交换仍可按完整组分页，用户原文不裁掉。
         return groups(history)[: self.config.context.protect_first_n]
 
     async def prefix(self, user: Message, recovery: str = "", request=None) -> tuple[Message, dict]:
+        # 并行组合仓库规则、Skill、记忆与理解提示；检索线索不提升为用户授权。
         memory_task = self.memory.segment(
             user.content, queries=request.queries_for("memory") if request else None
         )
@@ -78,6 +83,7 @@ class ContextEngine:
         }
 
     def budget(self, system: Message, user: Message, tools: list[dict]) -> TokenBudget:
+        # 预留当前输入、系统提示、工具 Schema、输出与安全余量，再给历史分配空间。
         d = self.config.agents.defaults
         margin = max(128, int(d.context_window_tokens * 0.02))
         return TokenBudget(
@@ -92,6 +98,7 @@ class ContextEngine:
     async def build_plan(
         self, session, history, user, system, tools, budget, manifest, plan: ContextPlan
     ) -> AssembledContext:
+        # 验证真实消息/归档 ID，关闭工具配对并执行最终预算门，不接受模型凭空造历史。
         ids = set(plan.include_message_ids)
         for ref in plan.include_archive_refs:
             row = await self.store.run("archive_get", session, ref)
@@ -120,6 +127,7 @@ class ContextEngine:
             else:
                 raise ContextOverflow("未知memory_sections：" + section)
         fixed = replace(system, content=system.content + ("\n\n" + "\n\n".join(extra) if extra else ""))
+        # 预算处理只生成投影；原生 reasoning 的保留项不改写，避免改变它们的历史前缀。
         projected = history
         if estimate([fixed, *closed, user], tools) > budget.input_limit and not any(
             item.get("type") == "reasoning" for m in closed for item in m.native_items
@@ -139,6 +147,7 @@ class ContextEngine:
             budget.input_limit,
         )
         paged = []
+        # 保护组也可能很长；仍超限时按完整 closed exchange 分页，不能拆并行调用的一半。
         if validation["over_by"] and not validation["errors"]:
             messages, paged = page_tool_exchanges([fixed, *selected, user], tools, budget.input_limit)
             selected, validation = trim(
@@ -183,6 +192,7 @@ class ContextEngine:
         recovery: str = "",
         request=None,
     ) -> AssembledContext:
+        # 接单时生成 manifest/相关度并选择快路或 Curator；遗漏事实仍可回查，不删除源消息。
         system, meta = await self.prefix(user, recovery, request)
         budget = self.budget(system, user, tools)
         if estimate([system, user], tools) > budget.input_limit:
@@ -230,6 +240,7 @@ class ContextEngine:
         elif not force or not history:
             assembled = await self.build_plan(session, history, user, system, tools, budget, manifest, plan)
             assembled.metadata["path"] = "fast"
+        # 私有规划器超时/失败不能卡死主流程；本地回退仍必须通过同一个最终预算门。
         if assembled is None:
             protected = [m.id for g in self.protected_groups(history) for m in g]
             recent = [m.id for m in history[-16:]]
@@ -248,6 +259,7 @@ class ContextEngine:
             for m in history
             if (m.id not in selected or m.id in elided) and not manifest[str(m.id)].get("archive_ref")
         ]
+        # 遗漏或分页的事实保存可校验归档；源 Session 记录继续保留。
         if dropped:
             ref = await self.archive.save(session, history, dropped, "omitted or paged out of model window")
             for mid in dropped:
@@ -266,6 +278,7 @@ class ContextEngine:
         return assembled
 
     async def rebalance(self, session: str, window: AssembledContext, tools: list[dict]) -> AssembledContext:
+        # 每次调模型前复核活动窗口；原生 reasoning 的保留项不改正文，只移出完整旧交换。
         if estimate(window.messages, tools) <= window.budget.input_limit:
             assert_window(window.messages, tools, window.budget.input_limit)
             return window
@@ -328,6 +341,7 @@ class ContextEngine:
         return result
 
     async def after_turn(self, session: str, user: Message, result: TurnResult):
+        # 保存派生工作状态与未结线索；它不是事实真源，也不因总结失败撤回已执行动作。
         state = await self.store.run("context_get", session)
         working = state["working"]
         working["goals"] = ([excerpt(user.content, 200)] + working.get("goals", []))[:8]

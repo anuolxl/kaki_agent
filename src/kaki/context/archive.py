@@ -14,6 +14,7 @@ from kaki.workspace import Workspace
 
 
 class Archive:
+    # 可校验的原文归档，只是派生副本；SQLite 会话原文始终保留。
     def __init__(self, workspace: Workspace, store: Store, config: Config):
         self.workspace, self.store = workspace, store
         self.root = (workspace.state / config.context.archive_dir).resolve()
@@ -30,6 +31,7 @@ class Archive:
         summary: str = "",
         tags: list[str] | None = None,
     ) -> str:
+        # 只归档真实消息 ID，写入内容寻址文件后登记会话归属，不能让摘要替代源数据。
         requested = set(ids)
         selected = [m for m in messages if m.id in requested]
         if requested - {m.id for m in selected}:
@@ -56,6 +58,7 @@ class Archive:
         )
 
     async def load(self, session: str, ref: str) -> tuple[dict, dict]:
+        # 同时检查 Session、路径和 SHA256，避免引用错会话或损坏归档。
         row = await self.store.run("archive_get", session, ref)
         path = Path(row["artifact"]["path"]).resolve()
         if not path.is_relative_to(self.root) or not path.is_file():
@@ -66,6 +69,7 @@ class Archive:
         return json.loads(raw), row
 
     async def read(self, session: str, ref: str, offset: int = 0, limit: int = 8000) -> dict:
+        # 按精确字符范围分页，供模型取回证据，不让超长原文再次撑爆窗口。
         payload, row = await self.load(session, ref)
         text = json.dumps(payload, ensure_ascii=False, indent=2)
         offset = max(0, offset)

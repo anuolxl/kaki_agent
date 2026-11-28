@@ -18,6 +18,7 @@ Delta = Callable[[str, str], Awaitable[None]]
 
 
 def wire_input(messages: list[Message], resolve_part=None) -> tuple[str, list[dict[str, Any]]]:
+    # 领域消息到 Responses 协议的唯一转换；保留原生输出顺序与 call_id 配对，不重造 reasoning。
     instructions = []
     items = []
     for m in messages:
@@ -56,6 +57,7 @@ def wire_input(messages: list[Message], resolve_part=None) -> tuple[str, list[di
 
 
 def expand_parts(parts, resolver):
+    # 实际请求时才读取受控图片附件；估算阶段只保留引用和图片预算。
     result = []
     for p in parts:
         if "artifact_id" in p:
@@ -70,6 +72,7 @@ def expand_parts(parts, resolver):
 
 
 def normalize_response(response: Any, call_id: str) -> ModelResponse:
+    # 完整终事件转换为 ModelResponse；工具参数不完整时作为无效输入交给校验，不能猜测。
     data = response.model_dump(exclude_none=True) if hasattr(response, "model_dump") else response
     native = data.get("output", [])
     text = []
@@ -119,6 +122,7 @@ def normalize_response(response: Any, call_id: str) -> ModelResponse:
 
 
 def classification(exc: BaseException) -> str:
+    # 把 SDK/HTTP 异常归类为有限恢复策略；返回类别，不把凭据或原始响应直接发给用户。
     code = getattr(exc, "status_code", None)
     text = str(exc).lower()
     if "context" in text and any(x in text for x in ["length", "window", "maximum", "too long", "limit"]):
@@ -135,7 +139,9 @@ def classification(exc: BaseException) -> str:
 
 
 class RightCodeProvider:
+    # Right Code 的 OpenAI Responses 兼容传输；负责 SSE/重试/用量，不拥有 Agent 决策循环。
     def __init__(self, config: Config, record: Record | None = None, part_resolver=None):
+        # 创建网络客户端时禁用 SDK 隐式重试，由 complete 统一记录每次真实尝试。
         config.validate_credentials()
         self.config = config
         self.record = record
@@ -148,9 +154,11 @@ class RightCodeProvider:
             timeout=p.timeout,
             max_retries=0,
         )
+        # 只记接口明确不支持的可选参数，不据此静默切换模型或 endpoint。
         self.disabled_parameters: set[str] = set()
 
     async def close(self):
+        # 释放该 Runtime 的 HTTP 连接池，不修改会话事实或触发新模型调用。
         await self.client.close()
 
     async def complete(
@@ -166,9 +174,11 @@ class RightCodeProvider:
         tool_choice: Any = "auto",
         max_attempts: int = 4,
     ) -> ModelResponse:
+        # 流式增量只用于展示；收到完整 response 后才交出工具调用，并持久记录尝试与用量。
         model = model or self.config.agents.defaults.model
         api_model = model.removeprefix("openai/")
         instructions, items = await asyncio.to_thread(wire_input, messages, self.part_resolver)
+        # store=False 只控制上游保存；本机仍保留完整事实，原生 reasoning 由客户端显式重放。
         kwargs = {
             "model": api_model,
             "input": items,
@@ -183,6 +193,7 @@ class RightCodeProvider:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = tool_choice
         # No implicit fallback to another model or endpoint. Only unsupported optional parameters may be omitted.
+        # 重试由这一层统一控制并逐次记账，OpenAI SDK 的隐式重试已禁用。
         for attempt in range(max_attempts):
             call_id = uid("llm_")
             started = now()
@@ -201,6 +212,7 @@ class RightCodeProvider:
                     "omitted_parameters": sorted(self.disabled_parameters),
                 },
             }
+            # 先记录 running 尝试；没有完整 usage 的失败也保留为 unknown 用量。
             if self.record:
                 await self.record(record)
             try:

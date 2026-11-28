@@ -35,6 +35,7 @@ def entry(
     model: str | None = typer.Option(None, "--model"),
     version: bool = typer.Option(False, "--version", is_eager=True),
 ):
+    # 进程入口：Typer 先汇总全局 cwd/config/resume/model 参数；未指定子命令时进入桌面启动链。
     if version:
         console.print("Kaki Agent " + __version__)
         raise typer.Exit()
@@ -54,6 +55,7 @@ def desktop_app(
     no_open: bool = typer.Option(False, "--no-open", help="仅启动本机服务"),
     port: int = typer.Option(0, "--port", min=0, max=65535),
 ):
+    # App 子命令只负责参数转交；实例复用、窗口线程和资源关闭统一由 desktop.launch 管理。
     from kaki.desktop import launch
 
     raise typer.Exit(
@@ -71,6 +73,7 @@ def desktop_app(
 
 @app.command("tui")
 def terminal_ui(ctx: typer.Context):
+    # TUI 分叉点：解析同一份配置与工作区，创建 Runtime 并交给 Textual；内核仍复用主循环。
     """终端界面：Ctrl+C退出整个进程，停止按钮仅停止本轮任务。"""
     options = load_config(ctx.obj["config"], model=ctx.obj["model"])
     options.validate_credentials()
@@ -90,6 +93,7 @@ def setup(
     ),
     browser: bool = typer.Option(True, "--browser/--no-browser"),
 ):
+    # 把兼容配置转换为 Kaki 本机配置；密钥只写私密文件，不能借配置诊断回显。
     target = config_path(ctx.obj["config"])
     options = load_config(target) if target.exists() else Config()
     data = options.model_dump(mode="json")
@@ -130,6 +134,7 @@ def setup(
 
 
 def environment_report(options: Config, workspace: Workspace, chosen_config: Path | None = None) -> dict:
+    # 只读取环境可用性，报告与具体 provider 请求成功是两种证据。
     packages = {
         p: importlib.metadata.version(p) for p in ["kaki-agent", "openai", "textual", "mcp", "tiktoken"]
     }
@@ -157,6 +162,7 @@ def doctor(
     browser: bool = typer.Option(False, "--browser", help="验证浏览器MCP及about:blank导航"),
     report: Path | None = typer.Option(None, "--report", help="保存不含密钥的验证JSON"),
 ):
+    # 显式诊断命令：按选项检查配置、模型或浏览器；启动 UI 本身不会自动调用这个诊断流程。
     options = load_config(ctx.obj["config"], model=ctx.obj["model"])
     workspace = Workspace.resolve(ctx.obj["cwd"], options)
     result = environment_report(options, workspace, ctx.obj["config"])
@@ -246,6 +252,7 @@ def run_once(
     message: str = typer.Option(..., "--message", "-m"),
     json_output: bool = typer.Option(False, "--json"),
 ):
+    # 无界面的单轮入口；无法回答授权/澄清时返回中断结果，不能永久等待交互 Future。
     """Headless automation uses exactly the same Runtime as TUI."""
     options = load_config(ctx.obj["config"], model=ctx.obj["model"])
     workspace = Workspace.resolve(ctx.obj["cwd"], options)
@@ -282,6 +289,7 @@ def run_once(
 
 @app.command()
 def sessions(ctx: typer.Context):
+    # 通过同一 Store 查询或管理会话；会话列表不是另一个常驻 Agent 服务。
     options = load_config(ctx.obj["config"])
     ws = Workspace.resolve(ctx.obj["cwd"], options)
     from kaki.store import Store
@@ -302,6 +310,7 @@ def sessions(ctx: typer.Context):
 
 @app.command("skills")
 def list_skills(ctx: typer.Context):
+    # 这里只展示安装元数据；实际工具依赖、脚本 hash 与执行权限仍由 Runtime 检查。
     """List installed local Skill metadata; live prerequisite checks use kaki_capabilities."""
     from kaki.context.knowledge import Skills
 
@@ -325,6 +334,7 @@ def list_skills(ctx: typer.Context):
 
 
 def main():
+    # 统一 CLI 错误边界：把可公开错误转换为退出码，避免把原始认证异常打印给终端。
     try:
         app()
     except (KakiError, ValueError, OSError) as exc:
