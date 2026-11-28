@@ -10,7 +10,7 @@ import shlex
 import uuid
 from pathlib import Path
 
-from remote_worker import DEPENDENCIES
+from remote_worker import DEPENDENCIES, dependency_order, dependency_ref
 
 from kaki.execution import run_process
 
@@ -110,13 +110,16 @@ async def main(args):
             "GIT_TERMINAL_PROMPT": "0",
             "GIT_SSH_COMMAND": "ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=2",
         }
-        for name, dependency in sorted(DEPENDENCIES.items()):
+        for name in dependency_order():
+            dependency = DEPENDENCIES[name]
             declaration = build
             if dependency.get("parent"):
                 parent = dependency["parent"]
+                parent_cache = args.state / ("dependency-" + parent + ".git")
+                parent_ref = dependency_ref(parent_cache, DEPENDENCIES[parent]["ref"])
                 viewed = await run_process(
-                    ["git", "show", DEPENDENCIES[parent]["ref"] + ":BUILD"],
-                    args.state / ("dependency-" + parent + ".git"),
+                    ["git", "show", parent_ref + ":BUILD"],
+                    parent_cache,
                     15,
                 )
                 if viewed["exit_code"]:
@@ -147,7 +150,8 @@ async def main(args):
                 if cloned["exit_code"]:
                     raise RuntimeError("local dependency access failed: " + cloned["stderr"][-1500:])
                 temporary.rename(cache)
-            revision = await run_process(["git", "rev-parse", dependency["ref"] + "^{commit}"], cache, 15)
+            selected_ref = dependency_ref(cache, dependency["ref"])
+            revision = await run_process(["git", "rev-parse", selected_ref + "^{commit}"], cache, 15)
             commit = revision["stdout"].strip()
             if revision["exit_code"] or not re.fullmatch(r"[0-9a-f]{40}", commit):
                 raise RuntimeError("cached dependency has no expected ref: " + name)

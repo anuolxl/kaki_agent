@@ -20,7 +20,32 @@ DEPENDENCIES = {
     "metrics2": {"repo": "cpputil/metrics2", "ref": "dev"},
     "metrics_sdk": {"repo": "cpputil/metrics_sdk", "ref": "v1.3.13"},
     "program": {"repo": "cpputil/program", "ref": "1.0.0"},
+    "consul": {"repo": "cpputil/consul", "ref": "1.0.0", "parent": "program"},
 }
+
+
+def dependency_order():
+    # 全新缓存也先校验/准备父BUILD，不能依赖上次执行遗留的父仓缓存。
+    pending, result = set(DEPENDENCIES), []
+    while pending:
+        ready = sorted(name for name in pending if DEPENDENCIES[name].get("parent") not in pending)
+        if not ready:
+            raise RuntimeError("fixed dependency declarations contain a cycle")
+        result.extend(ready)
+        pending.difference_update(ready)
+    return result
+
+
+def dependency_ref(repository, version):
+    # clone -b优先同名分支；裸rev-parse会优先同名tag，二者SHA可能不同。
+    for prefix in ["refs/heads/", "refs/tags/"]:
+        ref = prefix + version
+        try:
+            command(["git", "rev-parse", "--verify", ref + "^{commit}"], repository, timeout=15)
+            return ref
+        except RuntimeError:
+            pass
+    raise RuntimeError("fixed dependency branch/tag is missing")
 
 
 def now():
@@ -188,12 +213,14 @@ def prepare_dependency(request):
         raise RuntimeError("dependency mirror cannot be a symlink")
     if not destination.exists():
         command(["git", "-c", "core.hooksPath=/dev/null", "clone", "--bare", str(source), str(destination)])
-    commit = command(["git", "rev-parse", expected["ref"] + "^{commit}"], destination)
+    qualified_ref = dependency_ref(destination, expected["ref"])
+    commit = command(["git", "rev-parse", qualified_ref + "^{commit}"], destination)
     if commit != request["commit"]:
         raise RuntimeError("dependency ref does not match transferred commit")
     record = {
         "repo": expected["repo"],
         "ref": expected["ref"],
+        "qualified_ref": qualified_ref,
         "source_commit": commit,
         "bundle_sha256": request["bundle_sha256"],
         "path": str(destination),
@@ -224,7 +251,7 @@ def dependency_environment(root, env):
         mirror = pathlib.Path(entry["path"])
         if str(mirror.parent) != str(root / ".git-dependencies") or mirror.is_symlink():
             raise RuntimeError("dependency mirror path changed")
-        actual = command(["git", "rev-parse", expected["ref"] + "^{commit}"], mirror)
+        actual = command(["git", "rev-parse", dependency_ref(mirror, expected["ref"]) + "^{commit}"], mirror)
         if (
             entry["repo"] != expected["repo"]
             or entry["ref"] != expected["ref"]

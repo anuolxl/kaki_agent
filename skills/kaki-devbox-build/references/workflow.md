@@ -14,7 +14,7 @@
 
 3. 启动后台任务：`devbox-build`。
 
-若Devbox对cpputil/log@1.0.0-streamlog、cpputil/metrics_sdk@v1.3.13、cpputil/program@1.0.0以及传递依赖cpputil/metrics2@dev、log_market/CppLogSDK@master拉取报publickey认证失败，在本机SDK项目调用`devbox-dependencies`，arguments=`["--task","<task>"]`。适配器先核对本机SDK与固定log依赖的BUILD声明，再用本机现有Git读取权限制作指定版本bundle并逐项验SHA，导入task下的`.git-dependencies`。worker仅在构建子进程中设置Git URL重写，兼容Git2.29，不传凭据、不改全局Git配置。依赖回执记录repo/ref/commit/bundle_sha256/path；本机也无读取权限时明确失败，不绕过ACL。然后使用新job ID重试构建，保留旧失败记录。
+若Devbox对cpputil/log@1.0.0-streamlog、cpputil/metrics_sdk@v1.3.13、cpputil/program@1.0.0以及传递依赖cpputil/metrics2@dev、log_market/CppLogSDK@master、cpputil/consul@1.0.0拉取报publickey认证失败，在本机SDK项目调用`devbox-dependencies`，arguments=`["--task","<task>"]`。适配器先按父依赖顺序核对本机SDK与固定log/program依赖的BUILD声明，再用本机现有Git读取权限制作指定版本bundle并逐项验SHA，导入task下的`.git-dependencies`。worker仅在构建子进程中设置Git URL重写，兼容Git2.29，不传凭据、不改全局Git配置。依赖回执记录repo/ref/qualified_ref/commit/bundle_sha256/path；同名分支/tag优先分支，按git clone -b语义选择并记完整refs路径；本机也无读取权限时明确失败，不绕过ACL。然后使用新job ID重试构建，保留旧失败记录。
 
 ```text
 --repo sdk --task <task> --mode sdk-build --job sdk-build-<sha8> --timeout 1800

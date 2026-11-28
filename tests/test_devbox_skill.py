@@ -195,6 +195,27 @@ def test_dependency_bundle_mirror_redirect_is_process_local(prepared):
     assert git(source, "status", "--porcelain") == ""
 
 
+def test_dependency_order_prepares_parent_before_reading_its_build(prepared):
+    remote, _, _ = prepared
+    order = remote.dependency_order()
+    assert set(order) == set(remote.DEPENDENCIES)
+    assert order.index("program") < order.index("consul")
+    assert order.index("log") < order.index("log_sdk")
+
+
+def test_dependency_version_prefers_branch_like_git_clone_not_ambiguous_tag(prepared):
+    remote, source, _ = prepared
+    old = git(source, "rev-parse", "HEAD")
+    git(source, "tag", "1.0.0")
+    (source / "input.txt").write_text("branch version")
+    git(source, "add", "input.txt")
+    git(source, "commit", "-qm", "new branch version")
+    git(source, "branch", "1.0.0")
+    selected = remote.dependency_ref(source, "1.0.0")
+    assert selected == "refs/heads/1.0.0"
+    assert git(source, "rev-parse", selected) != old
+
+
 def test_queued_worker_disappearance_is_unknown_and_does_not_restart(prepared, monkeypatch):
     remote, _, request = prepared
     root = remote.owned_root(request["task"])
