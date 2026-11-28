@@ -12,6 +12,8 @@ v0.4.4 提供类型化 Git/草稿 MR、受信命令 profiles、Skill 能力检�
 
 从源码学习：[SQLite、源码阅读顺序与一次请求全链路](docs/source-reading-guide.md)，分别按顺序讲TUI与App的启动、接单和结果交互，公共Runtime/模型/工具链只展开一次，附函数调用流程图。
 
+当前源码已按启动、接单、主循环、工具、上下文、持久化和退出补齐中文阅读注释：[注释导航与阅读顺序](docs/source-comment-guide.md)。注释采用普通注释，不改变 CLI help、Pydantic Schema 或模型提示词。
+
 理解核心概念与字段：[数据结构与关系指南](docs/data-structures-guide.md)，按工作区、会话、Turn、上下文、模型/工具和数据库梳理真实类型，附状态图、持有关系图与协议数据流。
 
 ## 安装与本机部署

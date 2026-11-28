@@ -2,6 +2,7 @@
 
 
 def fused_rank(queries, documents, min_score=0.0):
+    # 每条查询先词法排序，再做加权 RRF；原文权重高于扩展，避免派生词淹没用户原意。
     from kaki.context.knowledge import rank
 
     scores = {}

@@ -1,3 +1,4 @@
+# 创建专用一次性验证项目；目标已存在即停止，不能覆盖用户现有目录。
 """Create a disposable single-Git fixture without touching an existing directory."""
 
 import subprocess

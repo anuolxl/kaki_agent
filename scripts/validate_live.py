@@ -18,6 +18,7 @@ from kaki.workspace import Workspace
 
 
 async def validate(args):
+    # 真实 Textual/Right Code 验收仅允许 disposable fixture，防止验证脚本误改业务仓库。
     root = args.workspace.resolve()
     if root.name != "kaki-e2e-workspace" or "disposable" not in (root / "AGENTS.md").read_text():
         raise SystemExit("Only the disposable kaki-e2e-workspace fixture is accepted")
@@ -101,6 +102,7 @@ async def validate(args):
 
 
 def main():
+    # 显式启动才访问真实模型/MCP；常规 pytest 不应自动触发付费外部验收。
     parser = argparse.ArgumentParser()
     parser.add_argument("--workspace", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)

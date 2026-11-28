@@ -18,20 +18,24 @@ from kaki.types import KakiError, ToolResult
 
 
 def digest(value):
+    # 操作指纹按规范 JSON 生成，供幂等、审批和状态复核使用；不是密码哈希。
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
 
 class DevelopmentTools:
+    # 类型化开发适配器：Git、可信命令 profile 与 MR 均从当前工作区和本机配置推导。
     def __init__(self, runtime):
         self.runtime = runtime
         self.workspace, self.config = runtime.workspace, runtime.config
 
     def _env(self):
+        # 只追加配置允许的可执行路径；不把整个宿主环境和模型凭据传给子进程。
         if not self.config.tools.exec.path_append:
             return {}
         return {"PATH": os.environ.get("PATH", "") + os.pathsep + self.config.tools.exec.path_append}
 
     async def _git(self, *args, check=True):
+        # 内部只读 Git 查询保留用户认证配置，禁可选索引写；与影子快照 Git 是两套资源。
         result = await run_process(
             ["git", "--no-pager", "-c", "core.fsmonitor=false", *args],
             self.workspace.root,
@@ -43,6 +47,7 @@ class DevelopmentTools:
         return result
 
     async def state(self):
+        # 读取 HEAD、分支、index 摘要与跟踪文件脏状态，形成批准后的状态比较依据。
         head, branch, index, dirty = await asyncio.gather(
             self._git("rev-parse", "--verify", "HEAD", check=False),
             self._git("symbolic-ref", "--quiet", "--short", "HEAD", check=False),
@@ -57,12 +62,14 @@ class DevelopmentTools:
         }
 
     def protected(self, branch):
+        # 保护模式匹配当前本地分支；detached HEAD 也不能直接进行文件修改。
         return not branch or any(
             fnmatch.fnmatchcase(branch, pattern)
             for pattern in self.config.tools.development.protected_branches
         )
 
     async def writable_state(self):
+        # 真正写入前再核对保护分支，不只依赖模型曾说“已经建分支”。
         state = await self.state()
         if self.protected(state["branch"]):
             raise KakiError("当前为保护分支或detached HEAD；请先通过kaki_git创建/切换开发分支")
@@ -70,6 +77,7 @@ class DevelopmentTools:
 
     @staticmethod
     def ref(value):
+        # 只接受明确的引用名/提交，拒绝可被解释为选项或复合 revision 的输入。
         if (
             not value
             or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,180}", value)
@@ -80,6 +88,7 @@ class DevelopmentTools:
         return value
 
     def paths(self, values):
+        # 暂存/提交只接受精确业务文件清单，避免 add . 混入用户改动或 Agent 控制文件。
         if not values or len(values) > 100:
             raise KakiError("必须列出1–100个精确文件路径，禁止add .或批量纳入整个目录")
         result = []
@@ -98,6 +107,7 @@ class DevelopmentTools:
         return sorted(set(result))
 
     async def remote(self, name):
+        # 只使用现有 origin 并拒绝内嵌凭据 URL，模型不能新增一个上传地址。
         if name != "origin":
             raise KakiError("当前开发工具只使用已配置的origin，不接受模型新增远端")
         url = (await self._git("remote", "get-url", name))["stdout"].strip()
@@ -106,6 +116,7 @@ class DevelopmentTools:
         return url
 
     async def prepare_git(self, a, ctx):
+        # 把 action 转成固定 Git argv 并绑定状态；不会提供 reset/stash/force/merge 保护分支。
         cfg = self.config.tools.development
         if not cfg.enabled:
             raise KakiError("tools.development.enabled=false")
@@ -195,6 +206,7 @@ class DevelopmentTools:
         )
 
     async def git(self, a, ctx):
+        # 执行已批准的 Git 操作；切分支成功后通知 loop 刷新规则并暂停同批剩余工具。
         operation = ctx["prepared_operation"]
         result = await run_process(
             operation.argv, self.workspace.root, 180, {**self._env(), "GIT_OPTIONAL_LOCKS": "0"}
@@ -208,17 +220,20 @@ class DevelopmentTools:
         )
 
     def expand(self, text):
+        # 仅替换两种明确占位符，不做 Shell 展开或任意 Python 格式化。
         return text.replace("{workspace}", str(self.workspace.root)).replace(
             "{state}", str(self.workspace.state)
         )
 
     def command(self, name):
+        # 模型只能选择已经配置的 profile，不能把脚本正文当新命令注册。
         profile = self.config.tools.commands.get(name)
         if not profile:
             raise KakiError("未配置此命令profile；先用kaki_capabilities查看实际能力")
         return profile
 
     def command_catalog(self):
+        # 验证命令程序和依赖 pin；“可启动”不证明目标项目测试必通过或 CLI 已认证。
         rows = []
         for name, profile in self.config.tools.commands.items():
             executable = self.expand(profile.argv[0])
@@ -246,13 +261,16 @@ class DevelopmentTools:
         return rows
 
     def available_commands(self):
+        # 就绪依赖参与 Skill 筛选，避免技能正文宣称不存在的执行入口。
         return {row["name"] for row in self.command_catalog() if row["available"]}
 
     def command_path(self, value):
+        # 文件参数基于当前工作区解析，不能随 App 进程启动目录而漂移。
         path = Path(self.expand(value)).expanduser()
         return (path if path.is_absolute() else self.workspace.root / path).resolve()
 
     def command_arguments(self, profile, values):
+        # 附加选项遵守 profile 白名单，输入和输出路径有独立边界。
         if values and not profile.allow_arguments:
             raise KakiError("此profile不接受附加参数")
         if len(values) > 80 or any("\0" in value or len(value) > 12000 for value in values):
@@ -284,6 +302,7 @@ class DevelopmentTools:
         return writes
 
     async def prepare_command(self, a, ctx):
+        # 展开可信 profile、绑定输入内容与脚本 hash；审批展示真实目标和参数摘要。
         profile = self.command(a["name"])
         values = a.get("arguments", [])
         self.command_arguments(profile, values)
@@ -348,6 +367,7 @@ class DevelopmentTools:
         )
 
     async def run_command(self, a, ctx):
+        # 只运行预检后的 argv；输出写入工作流目录，非零退出不能当作测试成功。
         profile = self.command(a["name"])
         operation = ctx["prepared_operation"]
         for p in self.command_arguments(profile, a.get("arguments", [])):
@@ -362,6 +382,7 @@ class DevelopmentTools:
         )
 
     async def repository(self):
+        # 从 origin 识别平台及仓库 ID，MR 不能由模型任意指定另一个仓库。
         url = await self.remote("origin")
         match = re.fullmatch(
             r"(?:git@|https://)(github\.com|code\.byted\.org|code-tx\.byted\.org)[:/]([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?",
@@ -372,6 +393,7 @@ class DevelopmentTools:
         return match.group(1), match.group(2)
 
     async def prepare_mr(self, a, ctx):
+        # 冻结 MR 的源/目标、标题与正文；操作描述交由平台适配器转换为实际 CLI。
         if not self.config.tools.development.enabled:
             raise KakiError("开发工具未启用")
         state = await self.writable_state()
@@ -400,6 +422,7 @@ class DevelopmentTools:
         )
 
     async def _find_mr(self, host, repo, head, base):
+        # 先按当前源/目标查询，避免超时续跑或重复任务创建第二个 MR。
         if host == "github.com":
             argv = [
                 "gh",
@@ -433,6 +456,7 @@ class DevelopmentTools:
         )
 
     async def mr(self, a, ctx):
+        # prepare 仅产出本地材料；远端创建先写排他回执，结果不明只查询，不盲目重发。
         state = await self.writable_state()
         host, repo = await self.repository()
         base = a["base"]

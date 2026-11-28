@@ -13,10 +13,12 @@ from kaki.types import Message
 
 @lru_cache(maxsize=1)
 def encoding():
+    # 复用 o200k_base 词表估算文本；这不训练词表，也不生成检索向量。
     return tiktoken.get_encoding("o200k_base")
 
 
 def count_text(text: str) -> int:
+    # 本地估算失败时用字节近似保守回退；服务商实际 usage 仍是调用统计来源。
     if not text:
         return 0
     try:
@@ -26,6 +28,7 @@ def count_text(text: str) -> int:
 
 
 def estimate(messages: list[Message], tools: list[dict] | None = None) -> int:
+    # 计入完整协议与工具定义；密文只在估算副本中用已报告输出 token 预留，实际传输不变。
     system, items = wire_input(messages)
     # Ciphertext is transport, not tokenized natural-language reasoning. Use the
     # provider's entire output-token count as a conservative reasoning reserve.
@@ -56,6 +59,7 @@ def estimate(messages: list[Message], tools: list[dict] | None = None) -> int:
 
 
 def excerpt(text: str, token_limit: int) -> str:
+    # 按 token 截断展示副本，不能拿截断内容替换数据库中的原始消息。
     try:
         e = encoding()
         ids = e.encode(text, disallowed_special=())

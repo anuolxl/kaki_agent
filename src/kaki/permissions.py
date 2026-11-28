@@ -22,6 +22,7 @@ BLOCKED_BROWSER_TOOLS = {"run_code", "evaluate", "install", "file_upload"}
 
 
 def edit_request(text):
+    # 保守识别真实用户是否提出修改；派生意图标签和工具返回文本不进入这个授权来源。
     clauses = re.split(r"[，,。\n;]", text)
     for clause in clauses:
         if re.search(r"如何|怎么|是否|方案|计划|建议|不要|不修改|do not|how to|whether", clause, re.I):
@@ -37,18 +38,28 @@ def edit_request(text):
 
 @dataclass(frozen=True)
 class PreparedOperation:
+    # 宿主冻结的操作描述，供审批前后比较；冻结 dataclass 不代表嵌套 dict 自动深度不可变。
+    # 被注册的工具，而不是由模型随意选择的执行器。
     name: str
+    # 宿主分类的能力，用来选择授权门与测试证据。
     capability: str
+    # 规范文件/工作区/站点，绑定审批作用域。
     resource: str
+    # 规范参数摘要，防止批准 A 后执行另一份参数。
     fingerprint: str
+    # Git/profile 的真实实参；MR 适配器用其表达固定动作签名。
     argv: tuple[str, ...] = ()
+    # 写入前文件内容 hash 或 missing。
     file_state: str | None = None
+    # Git 状态/脚本/输入摘要，批准与快照后都要复算。
     state_token: str | None = None
+    # 远端请求的可审查目标摘要，不含认证凭据。
     review: dict | None = None
 
 
 def structured_command(command):
     # No shell grammar is accepted, even inside quotes. Quoting is solely argv grouping.
+    # 把有限命令模板转为 argv/能力分类；shlex 只做参数分组，不执行 Shell 语法。
     if re.search(r"[\n\r;&|<>`$]", command):
         raise KakiError("只支持单条结构化命令，禁止管道、重定向、变量和命令替换")
     try:
@@ -128,16 +139,21 @@ def structured_command(command):
 
 
 class PermissionService:
+    # 应用层能力门；不会把获准测试/脚本变成 OS 沙箱，也不把模型“同意”当用户批准。
     def __init__(self, runtime):
         self.runtime = runtime
+        # 临时批准只在当前 Turn，键包含规范资源及操作范围。
         self.grants = set()
+        # 记录已拒绝指纹，避免同轮对相同动作反复追问。
         self.denials = set()
 
     def begin(self):
+        # 每个 Turn 的临时批准/拒绝清零，不能从旧会话或恢复日志继承授权。
         self.grants.clear()
         self.denials.clear()
 
     def prepare(self, call, args):
+        # 规范路径、文件版本与命令模板在宿主生成，避免执行器直接相信模型提供的目标。
         rt = self.runtime
         name = call.name
         argv = ()
@@ -261,6 +277,7 @@ class PermissionService:
         return PreparedOperation(name, capability, resource, fingerprint, argv, file_state)
 
     def task_allows(self, operation, human):
+        # 只使用用户原文及真实澄清判断已授权范围；只读/ask 配置仍是上限。
         mode = self.runtime.config.permissions.mode
         cap = operation.capability
         if cap in {
@@ -299,6 +316,7 @@ class PermissionService:
         return False
 
     def restriction(self, operation, human):
+        # 明确禁止项优先于自动范围判断和临时授权，避免“允许”覆盖用户排除路径。
         if operation.capability == "workspace.write" and GLOBAL_NO_WRITE.search(human):
             return "当前用户明确限制文件写入"
         if operation.capability == "test.execute" and NO_TEST.search(human):
@@ -322,6 +340,7 @@ class PermissionService:
         return None
 
     async def authorize(self, operation, ctx, arguments=None):
+        # 固定操作未被任务覆盖时创建作用域清晰的审批；外部写/推送/MR 创建只允许 once。
         rt = self.runtime
         human = ctx.get("human_text", ctx.get("user_text", ""))
         restriction = self.restriction(operation, human)

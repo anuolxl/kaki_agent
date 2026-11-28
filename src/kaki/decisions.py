@@ -10,11 +10,14 @@ APPROVAL_LABELS = {"once": "仅允许这一次", "turn": "本轮允许同类操�
 
 
 class DecisionService:
+    # 同一 Runtime 同时只持有一个持久问题；内存 Future 只负责等待，不是审批事实。
     def __init__(self, runtime):
         self.runtime = runtime
+        # 只用于同一活跃作用域的重复送达幂等，不承接旧 Turn 的批准。
         self.answered: dict[str, dict] = {}
 
     async def request(self, kind, question, options=None, operation=None):
+        # 先写 decisions 再发 UI 事件；取消或结束时问题过期，不能让旧回答解锁新 Turn。
         rt = self.runtime
         if not rt.interactive:
             raise InteractionRequired(kind, question)
@@ -55,6 +58,7 @@ class DecisionService:
             await rt.store.run("decision_expire", identity)
 
     async def answer(self, identity, text, choice=None):
+        # 精确校验问题 ID、会话、Turn、选项文本与 scope，提交后才完成 Future。
         rt = self.runtime
         q = rt.question
         # Idempotent duplicate delivery is accepted only in the same active scope.

@@ -22,10 +22,12 @@ Do not invent files, source IDs, completed actions or approvals. Use the user's 
 
 
 class UnderstandingService:
+    # 每 Turn 最多一次联合推断，意图与改写可独立选策略/回退；不启动另一套业务工具循环。
     def __init__(self, config, provider):
         self.config, self.provider = config.understanding, provider
 
     async def prepare(self, user, history):
+        # 先本地分析，再按策略决定一次 LLM 调用；预算、来源或输出不合格就局部回退。
         cfg = self.config
         intent, rewrite = local_analysis(user.content, history, cfg)
         result = RequestContext(user.content, user.id, intent, rewrite)
@@ -118,6 +120,7 @@ class UnderstandingService:
 
     def refine(self, request, history):
         # Clarification never resets the one-attempt model budget or replaces the original request.
+        # 真实澄清后只重新做本地分析，不重置额外模型预算，也不覆盖原始请求。
         request.intent, request.rewrite = local_analysis(request.human_text, history, self.config)
         request.rewrite.queries = {
             target: list(dict.fromkeys([request.original_text, *queries]))[

@@ -13,6 +13,7 @@ from .tokens import estimate
 
 
 def groups(messages: list[Message]) -> list[list[Message]]:
+    # 按 user 边界划分历史候选；这与一次 assistant+tool 交换的原子配对是两个层级。
     result = []
     for m in messages:
         if m.role == "user" or not result:
@@ -22,6 +23,7 @@ def groups(messages: list[Message]) -> list[list[Message]]:
 
 
 def structural_errors(messages: list[Message]) -> list[str]:
+    # 检查调用 ID 与结果是否完整闭合，防止孤立结果或半个并行工具批次进入模型。
     pending = {}
     errors = []
     for m in messages:
@@ -46,6 +48,7 @@ def structural_errors(messages: list[Message]) -> list[str]:
 
 
 def canonical(messages: list[Message], ids: list[int]) -> list[Message]:
+    # 选择任一调用/结果就补齐整个工具组，并保留合法用户边界，避免制造残缺历史。
     selected = set(ids)
     by_call = {}
     children = {}
@@ -79,6 +82,7 @@ def trim(
     tools: list[dict],
     input_limit: int,
 ) -> tuple[list[Message], dict]:
+    # 优先按完整用户组移除低相关历史；最终仍必须同时满足预算和协议配对。
     chosen = canonical(history, ids)
     dropped = []
     while estimate([system, *chosen, user], tools) > input_limit:
@@ -104,6 +108,7 @@ def trim(
 
 
 def shrink_tool_text(messages: list[Message], keep: int = 3) -> tuple[list[Message], int]:
+    # 纯文本窗口可省略旧工具正文；完整原文仍在 Store/归档，不是把事实删除。
     indices = [i for i, m in enumerate(messages) if m.role == "tool"]
     old = set(indices[:-keep] if keep else indices)
     placeholder = (
@@ -121,6 +126,7 @@ def shrink_tool_text(messages: list[Message], keep: int = 3) -> tuple[list[Messa
 
 
 def page_tool_exchanges(messages: list[Message], tools: list[dict], limit: int):
+    # 原生窗口按完整闭合交换分页，连同 opaque 项整体移出；保留项逐字保持原样。
     """Page out closed exchanges, including their opaque native reasoning, under pressure.
 
     Human messages and standalone assistant answers stay intact. Surviving native
@@ -159,6 +165,7 @@ def page_tool_exchanges(messages: list[Message], tools: list[dict], limit: int):
 
 
 def assert_window(messages: list[Message], tools: list[dict], limit: int):
+    # 最后一道协议与 token 门，不能用“模型觉得够了”代替宿主检查。
     errors = structural_errors(messages)
     if errors:
         raise ContextOverflow("模型窗口工具配对不合法：" + "; ".join(errors))

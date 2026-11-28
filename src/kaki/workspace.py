@@ -17,10 +17,15 @@ from kaki.types import KakiError, uid
 
 @dataclass
 class Workspace:
+    # 规范化的单 Git 工作树根，写入不能跨越。
     root: Path
+    # 独立于业务源码的项目状态目录，保存数据库、附件和影子快照。
     state: Path
+    # 由真实路径派生；换目录会形成新的工作区隔离域。
     id: str
+    # 显式继承的资料目录或单文件，只允许规定的读取。
     knowledge_roots: list[Path] = field(default_factory=list)
+    # 已识别的规则文件；加载规则不自动放宽写入边界。
     rule_files: list[Path] = field(default_factory=list)
 
     @classmethod
@@ -129,6 +134,7 @@ class Workspace:
 class WorkspaceLease:
     def __init__(self, state: Path):
         self.path = state / "execution.lock"
+        # 持有文件句柄就持有 flock，进程退出也由操作系统释放。
         self.file = None
 
     def acquire(self):
