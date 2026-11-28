@@ -8,6 +8,8 @@ This module turns previously unavailable development operations into registered,
 
 `execution.run_process(argv, cwd, timeout, env)` uses argv without a shell, a filtered inherited environment, bounded output and process-group cancellation. Trusted profiles can themselves run Bash/CLI/repository scripts and have their inherent privileges. Tests and Git hooks can execute repository code. Declaring a command `workspace.check` is an administrator trust decision, not a proof of harmlessness.
 
+Only executed `kaki_exec` test templates and command profiles explicitly classified `test.execute` contribute to Turn verification. Profile evidence includes expanded argv (displayed via shlex.join), cwd, exit_code and run_id. An `external.write` test-platform submission returning 0 never becomes a passed test result.
+
 ## Configuration contract
 
 Both camelCase and snake_case keys are accepted; existing provider settings and nonempty environment precedence stay unchanged. `files` is an opaque path→SHA256 mapping, like opaque `env`/`extra_headers` keys.

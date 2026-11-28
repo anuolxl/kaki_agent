@@ -194,6 +194,30 @@ async def test_external_command_only_once_approval_and_real_execution(workspace,
         await rt.close()
 
 
+async def test_registered_test_profile_records_real_verification(workspace, config):
+    config.tools.commands["test-profile"] = CommandOptions(
+        description="run fixture tests",
+        argv=[sys.executable, "-m", "unittest", "-v"],
+        capability="test.execute",
+    )
+    (workspace.root / "test_case.py").write_text(
+        "import unittest\nclass T(unittest.TestCase):\n def test_one(self): self.assertEqual(2+2,4)\n"
+    )
+    p = ScriptedProvider(
+        ModelResponse(tool_calls=[ToolCall("test", "kaki_command", {"name": "test-profile"})]),
+        ModelResponse(text="done"),
+    )
+    rt = Runtime(workspace, config, provider=p)
+    try:
+        await rt.initialize(connect_browser=False)
+        result = await rt.run("运行测试")
+        assert result.verification["status"] == "passed"
+        assert result.verification["commands"][0]["exit_code"] == 0
+        assert "unittest" in result.verification["commands"][0]["command"]
+    finally:
+        await rt.close()
+
+
 async def test_skill_readiness_explicit_boundary_private_files_and_deferred_tool(workspace, config):
     seed(workspace)
     config.tools.development.enabled = True

@@ -135,14 +135,25 @@ class AgentLoop:
                     tool_count += 1
                     failures += int(result.failed)
                     refresh_context = refresh_context or result.context_refresh
-                    if (
-                        result.executed
-                        and call.name == "kaki_exec"
-                        and rt.is_test_command(call.arguments.get("command", ""))
-                    ):
+                    command = None
+                    cwd = str(rt.workspace.root)
+                    if call.name == "kaki_exec" and rt.is_test_command(call.arguments.get("command", "")):
+                        command = call.arguments["command"]
+                        cwd = call.arguments.get("working_dir", cwd)
+                    if call.name == "kaki_command":
+                        profile = rt.config.tools.commands.get(call.arguments.get("name"))
+                        if profile and profile.capability == "test.execute":
+                            import shlex
+
+                            expand = rt.tools.development.expand
+                            command = shlex.join(
+                                [expand(v) for v in profile.argv + call.arguments.get("arguments", [])]
+                            )
+                            cwd = expand(profile.cwd or "{workspace}")
+                    if result.executed and command:
                         evidence = {
-                            "command": call.arguments["command"],
-                            "cwd": call.arguments.get("working_dir", str(rt.workspace.root)),
+                            "command": command,
+                            "cwd": cwd,
                             "exit_code": result.exit_code,
                             "executed": result.executed,
                             "state": "unknown"
