@@ -96,6 +96,24 @@ async def test_protected_branch_and_unrelated_index_are_preserved(workspace, con
         await rt.close()
 
 
+async def test_git_log_uses_the_requested_revision_instead_of_current_branch(workspace, config):
+    seed(workspace)
+    git(workspace, "switch", "-c", "codex/topic")
+    (workspace.root / "topic.txt").write_text("topic")
+    git(workspace, "add", "topic.txt")
+    git(workspace, "commit", "-m", "topic-only commit")
+    config.tools.development.enabled = True
+    rt = Runtime(workspace, config, provider=ScriptedProvider())
+    try:
+        await rt.initialize(connect_browser=False)
+        operation = await rt.tools.development.prepare_git({"action": "log", "ref": "master"}, {})
+        result = await rt.tools.development.git({"action": "log"}, {"prepared_operation": operation})
+        text = json.loads(result.text)["stdout"]
+        assert "initial" in text and "topic-only commit" not in text
+    finally:
+        await rt.close()
+
+
 async def test_branch_change_blocks_remaining_batch_under_stale_rules(workspace, config):
     seed(workspace)
     config.tools.development.enabled = True

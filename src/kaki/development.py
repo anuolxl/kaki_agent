@@ -126,7 +126,7 @@ class DevelopmentTools:
                 "workspace.read",
             )
         elif action == "log":
-            argv, cap = ["log", "-10", "--format=%h %s"], "workspace.read"
+            argv, cap = ["log", "-10", "--format=%h %s", self.ref(a.get("ref", "HEAD"))], "workspace.read"
         elif action == "fetch":
             remote = a.get("remote", "origin")
             url = await self.remote(remote)

@@ -46,6 +46,8 @@ Relative values of pathFlags/writeFlags resolve from the active workspace root, 
 
 Git fetch requires `ref`; create_branch requires `branch` and `base`; stage/commit require 1–100 exact file `paths`, never `.` or directories. Commit requires `message` and staged files exactly matching paths. Foreign staged files block the operation. Push targets the current nonprotected branch only, no force. The original `kaki_exec` test templates remain; `make test ARGS="..."` and one explicit `gofmt -w file.go` are supported.
 
+`log` honors its optional `ref` (default HEAD), with a fixed ten-subject output. Its revision argument is validated rather than silently ignored; a fixture with divergent master/topic histories covers the behavior.
+
 Successful branch switch sets `ToolResult.context_refresh=true`. The remainder of that model's tool batch is answered with unexecuted failure observations; the loop rereads rules/Skills and clears derived code queries before asking the model again. Existing snapshot operations use a separate Git index; `.worktrees/` is excluded from snapshots to preserve unrelated worktrees.
 
 ## Data structures and persistence
